@@ -108,7 +108,7 @@ class CXRDataset(Dataset):
         image = Image.open(full_img_path).convert("RGB")
         image = self.transform(image)  # Dùng transform đã khởi tạo sẵn (train/val)
         
-        tokenized_sentence = self.tokenizer(origin_txt)
+        tokenized_sentence = self.tokenizer.tokenize(origin_txt)
         truncate_txt(tokenized_sentence, self.seq_len)
 
         encoded_sentence = [self.vocab_stoi[w] if w in self.vocab_stoi else self.vocab_stoi["[UNK]"]

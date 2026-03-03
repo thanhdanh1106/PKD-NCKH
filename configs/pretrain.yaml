@@ -10,10 +10,10 @@ test_dataset: ""
 img_dir: "data/dataset/open_i/512_3ch" # Thư mục chứa ảnh thực tế
 
 # --- Training schedule ---
-epochs: 20 # Tăng từ 1 lên 20 epoch để model học đủ
-batch_size: 16 # Giảm từ 32 → 16, bù bằng gradient_accumulation (effective=32)
+epochs: 20 # 20 epoch để model học đủ
+batch_size: 128 # Tăng lên 128 để tận dụng 15GB VRAM T4 (~10-12GB)
 num_workers: 2 # Giảm xuống 2 cho Colab (hệ thống khuyến cáo max 2)
-gradient_accumulation_steps: 2 # Effective batch = 16 * 2 = 32
+gradient_accumulation_steps: 1 # Effective batch = 128 (không cần accumulate)
 
 # --- Image config ---
 img_encoder: "ViT"
@@ -30,7 +30,7 @@ hidden_size: 768
 temp: 0.07
 
 # --- Optimizer (AdamW) ---
-lr: 5e-5 # Tăng từ 2e-5 → 5e-5 để học nhanh hơn với warmup
+lr: 1e-4 # Tăng LR cho batch lớn (linear scaling rule)
 beta1: 0.9
 beta2: 0.999
 eps: 1e-6
@@ -52,7 +52,7 @@ max_seq_len: 512
 
 # --- T4 GPU optimizations ---
 fp16: true # Bật AMP FP16 cho T4 Tensor Cores (~2x speedup)
-gradient_checkpointing: true # Giảm ~40% VRAM, cho phép batch_size lớn hơn
+gradient_checkpointing: false # Tắt → training nhanh hơn 2x (đủ VRAM với T4 15GB)
 
 # --- Loss weights ---
 mlm_weight: 1.0 # Trọng số MLM loss

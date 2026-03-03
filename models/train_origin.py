@@ -27,38 +27,8 @@ from models.MedViLL_origin import MedViLL
 
 
 # ------------------------------------------------------------------
-# Label Smoothing Cross Entropy Loss
+# Loss Functions: sử dụng PyTorch built-in (nhanh hơn, ổn định hơn)
 # ------------------------------------------------------------------
-class LabelSmoothingCrossEntropy(nn.Module):
-    """
-    CrossEntropy với label smoothing.
-    smoothing=0.1 → giảm overfit, cải thiện generalization ~2-3% ACC.
-    """
-    def __init__(self, smoothing=0.1, ignore_index=-100):
-        super().__init__()
-        self.smoothing = smoothing
-        self.ignore_index = ignore_index
-
-    def forward(self, logits, targets):
-        n_classes = logits.size(-1)
-        valid_mask = (targets != self.ignore_index)
-
-        # Nếu không có token nào hợp lệ → trả loss = 0 (tránh NaN)
-        if not valid_mask.any():
-            return torch.tensor(0.0, device=logits.device, requires_grad=True)
-
-        # Chỉ tính trên valid tokens
-        valid_logits = logits[valid_mask]   # [N_valid, vocab]
-        valid_targets = targets[valid_mask]  # [N_valid]
-
-        log_prob = nn.functional.log_softmax(valid_logits, dim=-1)
-
-        with torch.no_grad():
-            smooth_targets = torch.full_like(log_prob, self.smoothing / (n_classes - 1))
-            smooth_targets.scatter_(-1, valid_targets.unsqueeze(-1), 1.0 - self.smoothing)
-
-        loss = (-smooth_targets * log_prob).sum(dim=-1).mean()
-        return loss
 
 
 # ------------------------------------------------------------------
@@ -128,10 +98,10 @@ class MedViLL_Trainer:
         self.train_data = train_dataloader
         self.test_data = test_dataloader
 
-        # --- Loss functions ---
-        mlm_smoothing = configs.get('label_smoothing', 0.1)
-        self.mlm_criterion = LabelSmoothingCrossEntropy(smoothing=mlm_smoothing, ignore_index=-100)
-        self.itm_criterion = LabelSmoothingCrossEntropy(smoothing=mlm_smoothing)
+        # --- Loss functions (built-in, nhanh hơn custom impl) ---
+        smoothing = configs.get('label_smoothing', 0.1)
+        self.mlm_criterion = nn.CrossEntropyLoss(ignore_index=-100, label_smoothing=smoothing)
+        self.itm_criterion = nn.CrossEntropyLoss(label_smoothing=smoothing)
         self.mlm_weight = configs.get('mlm_weight', 1.0)
         self.itm_weight = configs.get('itm_weight', 1.0)
 
