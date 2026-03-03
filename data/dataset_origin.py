@@ -96,8 +96,15 @@ class CXRDataset(Dataset):
                 origin_txt = random.choice(text)
             is_aligned = 1
 
-        # Đường dẫn tương đối cần được chuyển thành tuyệt đối
-        full_img_path = os.path.join(self.data_dir, img_path) if not os.path.isabs(img_path) else img_path
+        # Resolve image path: lấy tên file từ JSONL path, tìm trong img_dir
+        img_filename = os.path.basename(img_path)  # e.g. "3437.jpg"
+        img_dir = self.config.get('img_dir', None)
+        if img_dir:
+            full_img_path = os.path.join(img_dir, img_filename)
+        elif not os.path.isabs(img_path):
+            full_img_path = os.path.join(self.data_dir, img_path)
+        else:
+            full_img_path = img_path
         image = Image.open(full_img_path).convert("RGB")
         image = self.transform(image)  # Dùng transform đã khởi tạo sẵn (train/val)
         
