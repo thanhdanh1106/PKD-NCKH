@@ -19,7 +19,7 @@ import math
 import torch
 import torch.nn as nn
 import numpy as np
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 from transformers import BertConfig, AutoConfig
@@ -41,19 +41,23 @@ class LabelSmoothingCrossEntropy(nn.Module):
 
     def forward(self, logits, targets):
         n_classes = logits.size(-1)
-        # Tính log-softmax
-        log_prob = nn.functional.log_softmax(logits, dim=-1)
+        valid_mask = (targets != self.ignore_index)
 
-        # Tạo smooth target distribution
+        # Nếu không có token nào hợp lệ → trả loss = 0 (tránh NaN)
+        if not valid_mask.any():
+            return torch.tensor(0.0, device=logits.device, requires_grad=True)
+
+        # Chỉ tính trên valid tokens
+        valid_logits = logits[valid_mask]   # [N_valid, vocab]
+        valid_targets = targets[valid_mask]  # [N_valid]
+
+        log_prob = nn.functional.log_softmax(valid_logits, dim=-1)
+
         with torch.no_grad():
             smooth_targets = torch.full_like(log_prob, self.smoothing / (n_classes - 1))
-            valid_mask = (targets != self.ignore_index)
-            valid_targets = targets.clone()
-            valid_targets[~valid_mask] = 0
             smooth_targets.scatter_(-1, valid_targets.unsqueeze(-1), 1.0 - self.smoothing)
 
-        loss = (-smooth_targets * log_prob).sum(dim=-1)
-        loss = loss[valid_mask].mean()
+        loss = (-smooth_targets * log_prob).sum(dim=-1).mean()
         return loss
 
 
@@ -87,7 +91,7 @@ class MedViLL_Trainer:
 
         # --- FP16 AMP: chỉ bật trên GPU ---
         self.use_fp16 = configs.get('fp16', False) and torch.cuda.is_available()
-        self.scaler = GradScaler(enabled=self.use_fp16)
+        self.scaler = GradScaler('cuda', enabled=self.use_fp16)
         print(f"Device: {self.device} | AMP FP16: {self.use_fp16}")
 
         # --- Tạo model ---
@@ -208,7 +212,7 @@ class MedViLL_Trainer:
             txt_labels = data[2].to(self.device, non_blocking=True)  # MLM labels
 
             # ---- Forward với AMP autocast ----
-            with autocast(enabled=self.use_fp16):
+            with autocast('cuda', enabled=self.use_fp16):
                 mlm_output, itm_output = self.model(cls_tok, input_txt, attn_mask, segment, images, sep_tok)
 
                 # ITM loss: binary classification (aligned vs not-aligned)
@@ -234,8 +238,8 @@ class MedViLL_Trainer:
 
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
-                self.scheduler.step()
                 self.optimizer.zero_grad()
+                self.scheduler.step()  # scheduler SAU optimizer.step()
                 self.step_cnt += 1
 
             actual_loss = loss.item() * self.grad_accum_steps
@@ -290,7 +294,7 @@ class MedViLL_Trainer:
                 sep_tok    = data[7].to(self.device, non_blocking=True)
                 txt_labels = data[2].to(self.device, non_blocking=True)
 
-                with autocast(enabled=self.use_fp16):
+                with autocast('cuda', enabled=self.use_fp16):
                     mlm_output, itm_output = self.model(cls_tok, input_txt, attn_mask, segment, images, sep_tok)
                     itm_loss = self.itm_criterion(itm_output, labels)
                     mlm_output_flat = mlm_output.view(-1, mlm_output.size(-1))
@@ -332,9 +336,16 @@ class MedViLL_Trainer:
         os.makedirs(save_path_per_ep, exist_ok=True)
 
         model_to_save = self.model.module if hasattr(self.model, 'module') else self.model
-        model_to_save.save_pretrained(save_path_per_ep, safe_serialization=False)
-        
-        # Lưu optimizer state để resume training
+
+        # Lưu bằng torch.save (tránh lỗi tied weights với save_pretrained)
+        model_path = os.path.join(save_path_per_ep, 'pytorch_model.bin')
+        torch.save(model_to_save.state_dict(), model_path)
+
+        # Lưu config để có thể load lại
+        if hasattr(model_to_save, 'config'):
+            model_to_save.config.save_pretrained(save_path_per_ep)
+
+        # Lưu optimizer/scheduler state để resume training
         torch.save({
             'epoch': epoch,
             'optimizer': self.optimizer.state_dict(),
@@ -343,16 +354,13 @@ class MedViLL_Trainer:
             'best_val_loss': self.best_val_loss,
         }, os.path.join(save_path_per_ep, 'training_state.pth'))
 
-        try:
-            os.chmod(os.path.join(save_path_per_ep, 'pytorch_model.bin'), 0o777)
-        except Exception:
-            pass
-
         tag = " [BEST]" if is_best else ""
         print(f"Saved epoch {epoch} → {save_path_per_ep}{tag}")
 
         if is_best:
             best_path = os.path.join(file_path, 'best_model')
             os.makedirs(best_path, exist_ok=True)
-            model_to_save.save_pretrained(best_path, safe_serialization=False)
+            torch.save(model_to_save.state_dict(), os.path.join(best_path, 'pytorch_model.bin'))
+            if hasattr(model_to_save, 'config'):
+                model_to_save.config.save_pretrained(best_path)
             print(f"Best model saved → {best_path}")

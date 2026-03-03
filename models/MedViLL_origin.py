@@ -41,10 +41,26 @@ class ImageBertEmbeddings(nn.Module):
     def __init__(self, embeddings, img_dim=2048, hidden_size=768):
         super().__init__()
         self.img_embeddings = nn.Linear(img_dim, hidden_size)
-        self.token_type_embeddings = embeddings.token_type_embeddings
-        self.LayerNorm = embeddings.LayerNorm
+        # CRITICAL: tạo bản copy ĐỘC LẬP thay vì share reference
+        # Nếu share → image & text cùng 1 weight → model không phân biệt được
+        # + gây lỗi tied weights khi save_pretrained
+        self.token_type_embeddings = nn.Embedding(
+            embeddings.token_type_embeddings.num_embeddings,
+            embeddings.token_type_embeddings.embedding_dim
+        )
+        self.token_type_embeddings.weight.data.copy_(embeddings.token_type_embeddings.weight.data)
+
+        self.position_embeddings = nn.Embedding(
+            embeddings.position_embeddings.num_embeddings,
+            embeddings.position_embeddings.embedding_dim
+        )
+        self.position_embeddings.weight.data.copy_(embeddings.position_embeddings.weight.data)
+
+        self.LayerNorm = nn.LayerNorm(hidden_size, eps=1e-12)
+        self.LayerNorm.weight.data.copy_(embeddings.LayerNorm.weight.data)
+        self.LayerNorm.bias.data.copy_(embeddings.LayerNorm.bias.data)
+
         self.dropout = nn.Dropout(0.1)
-        self.position_embeddings = embeddings.position_embeddings
 
     def forward(self, input_imgs, img_pos, token_type_ids):
         imgs_embeddings = self.img_embeddings(input_imgs)
@@ -75,20 +91,15 @@ class MedViLLEncoder(BertPreTrainedModel):
         self.encoder = bert.encoder
         self.pooler = bert.pooler
 
-        # MLM head với weight tying (giảm params, cải thiện generalization)
+        # MLM head (standalone, không weight tying để tránh lỗi save)
         self.mlm_dense = nn.Linear(configs['hidden_size'], configs['hidden_size'])
         self.mlm_norm = BertLayerNorm(configs['hidden_size'], eps=1e-5)
-        self.mlm_decoder = nn.Linear(configs['hidden_size'], configs['vocab_size'], bias=False)
-        self.mlm_bias = nn.Parameter(torch.zeros(configs['vocab_size']))
-        self.mlm_decoder.bias = self.mlm_bias
+        self.mlm_decoder = nn.Linear(configs['hidden_size'], configs['vocab_size'])
 
         self.itm_head = nn.Sequential(
             nn.Dropout(0.1),
             nn.Linear(configs['hidden_size'], 2)
         )
-
-        # Tie MLM decoder weights với txt_embeddings (chuẩn BERT)
-        self.mlm_decoder.weight = self.txt_embeddings.word_embeddings.weight
 
         # Gradient checkpointing flag
         self.use_gradient_checkpointing = configs.get('gradient_checkpointing', False)
