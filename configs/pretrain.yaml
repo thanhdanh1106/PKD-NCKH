@@ -1,29 +1,65 @@
-train_dataset: '/content/drive/MyDrive/MedViLL-runimage/data/dataset/openi/Train.jsonl'
-valid_dataset: ''
-test_dataset: ''
-epochs: 1
-batch_size: 32
-num_workers: 2
-img_encoder: 'ViT'
+# ============================================================
+# MedViLL Pre-training Config - Optimized for T4 15GB VRAM
+# Target: ACC >= 90%, Loss minimized
+# ============================================================
+
+# --- Dataset paths (update paths for your environment) ---
+train_dataset: "data/openi/Train.jsonl"
+valid_dataset: "data/openi/Valid.jsonl"
+test_dataset: ""
+
+# --- Training schedule ---
+epochs: 20 # Tăng từ 1 lên 20 epoch để model học đủ
+batch_size: 16 # Giảm từ 32 → 16, bù bằng gradient_accumulation (effective=32)
+num_workers: 4 # Tăng worker để GPU không bị đói data
+gradient_accumulation_steps: 2 # Effective batch = 16 * 2 = 32
+
+# --- Image config ---
+img_encoder: "ViT"
 img_size: 224
-img_embed_pool_type: 'max'
-num_image_embeds: 196
+img_embed_pool_type: "max"
+num_image_embeds: 196 # 14x14 patches từ ViT patch_size=16
 img_channel: 3
 image_res: 224
 vision_width: 768
+
+# --- Model dimensions ---
 embedding_size: 768
 hidden_size: 768
 temp: 0.07
-lr: 2e-5  # Không có dấu nháy
-gradient_accumulation_steps: 4
-warmup: 0.1
-warmup_steps: 0
-tokenizer: "bert-base-uncased"
-bert_model: "bert-base-uncased"
-vocab_size: 30522
+
+# --- Optimizer (AdamW) ---
+lr: 5e-5 # Tăng từ 2e-5 → 5e-5 để học nhanh hơn với warmup
 beta1: 0.9
 beta2: 0.999
 eps: 1e-6
 weight_decay: 0.01
-seq_len: 32
+
+# --- LR Scheduler: Cosine Annealing với Linear Warmup ---
+warmup: 0.1 # 10% steps đầu dùng linear warmup
+warmup_steps: 0 # Nếu > 0, dùng warmup_steps cố định thay vì warmup ratio
+min_lr: 1e-6 # Learning rate tối thiểu khi cosine về 0
+
+# --- BERT tokenizer ---
+tokenizer: "bert-base-uncased"
+bert_model: "bert-base-uncased"
+vocab_size: 30522
+
+# --- Sequence ---
+seq_len: 64 # Tăng từ 32 → 64 để học được nhiều ngữ cảnh hơn
 max_seq_len: 512
+
+# --- T4 GPU optimizations ---
+fp16: true # Bật AMP FP16 cho T4 Tensor Cores (~2x speedup)
+gradient_checkpointing: true # Giảm ~40% VRAM, cho phép batch_size lớn hơn
+
+# --- Loss weights ---
+mlm_weight: 1.0 # Trọng số MLM loss
+itm_weight: 1.0 # Trọng số ITM loss
+label_smoothing: 0.1 # Label smoothing giúp tránh overfit
+
+# --- Early stopping ---
+patience: 5 # Dừng sớm nếu val loss không giảm sau 5 epoch
+
+# --- Gradient clipping ---
+max_grad_norm: 1.0 # Clip gradient để ổn định training

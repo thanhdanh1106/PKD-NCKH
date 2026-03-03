@@ -15,11 +15,42 @@ from transformers import BertModel
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 
-def get_transforms():
-    return transforms.Compose(
-        [transforms.RandomResizedCrop(224, scale=(0.8, 1.1), ratio=(3/4, 4/3)),
-         transforms.ToTensor(),
-         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+
+# ------------------------------------------------------------------
+# Augmentation - Medical Imaging Optimized (CXR)
+# ------------------------------------------------------------------
+def get_transforms(is_train=True):
+    """
+    Augmentation strategy cho chest X-ray (CXR):
+      Train: RandomResizedCrop + HorizontalFlip + ColorJitter + RandomAffine
+             Giúp model bất biến với góc chụp, độ sáng khác nhau giữa thiết bị
+      Val/Test: Resize + CenterCrop (deterministic, không augment)
+    """
+    imagenet_mean = [0.485, 0.456, 0.406]
+    imagenet_std  = [0.229, 0.224, 0.225]
+
+    if is_train:
+        return transforms.Compose([
+            # Scale ngẫu nhiên để học multi-scale features
+            transforms.RandomResizedCrop(224, scale=(0.75, 1.0), ratio=(0.85, 1.15)),
+            # Flip ngang (CXR có thể flip ngang, không flip dọc)
+            transforms.RandomHorizontalFlip(p=0.5),
+            # Xoay nhỏ: CXR thực tế đôi khi nghiêng ±10°
+            transforms.RandomRotation(degrees=10),
+            # Brightness/Contrast: bù đắp khác biệt giữa máy X-ray
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.1, hue=0.0),
+            # Affine nhỏ: shear nhẹ để robustness
+            transforms.RandomAffine(degrees=0, shear=5),
+            transforms.ToTensor(),
+            transforms.Normalize(imagenet_mean, imagenet_std),
+        ])
+    else:
+        return transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize(imagenet_mean, imagenet_std),
+        ])
         
 def truncate_txt(txt_tokens, max_seq_len):
     while True:
@@ -29,9 +60,10 @@ def truncate_txt(txt_tokens, max_seq_len):
             txt_tokens.pop()
 
 class CXRDataset(Dataset):
-    def __init__(self, data_path, tokenizer, args, config):
+    def __init__(self, data_path, tokenizer, args, config, is_train=True):
         self.args = args
         self.config = config
+        self.is_train = is_train
         if data_path.split('.')[-1] == 'jsonl':    
             self.data_dir = os.path.dirname(data_path)
             self.data = [json.loads(l) for l in open(data_path)]
@@ -47,6 +79,8 @@ class CXRDataset(Dataset):
         self._tril_matrix = torch.tril(torch.ones((self.total_len, self.total_len), dtype=torch.long))
         self.vocab_stoi = self.tokenizer.vocab
         self.vocab_len = len(self.vocab_stoi)
+        # Chọn augmentation dựa trên train/val/test
+        self.transform = get_transforms(is_train=is_train)
         
     def __len__(self):
         return len(self.data)
@@ -65,7 +99,7 @@ class CXRDataset(Dataset):
         # Đường dẫn tương đối cần được chuyển thành tuyệt đối
         full_img_path = os.path.join(self.data_dir, img_path) if not os.path.isabs(img_path) else img_path
         image = Image.open(full_img_path).convert("RGB")
-        image = get_transforms()(image)
+        image = self.transform(image)  # Dùng transform đã khởi tạo sẵn (train/val)
         
         tokenized_sentence = self.tokenizer(origin_txt)
         truncate_txt(tokenized_sentence, self.seq_len)
@@ -187,17 +221,20 @@ def create_dataset(tokenizer, config, args):
                 data_path=config['train_dataset'],
                 args=args,
                 tokenizer=tokenizer,
-                config=config)
+                config=config,
+                is_train=True)        # Augmentation mạnh cho train
     valid_dataset = CXRDataset(
                 data_path=config['valid_dataset'],
                 args=args,
                 tokenizer=tokenizer,
-                config=config) if config['valid_dataset'] else None
+                config=config,
+                is_train=False) if config['valid_dataset'] else None   # Không augment val
     test_dataset = CXRDataset(
                 data_path=config['test_dataset'],
                 args=args,
                 tokenizer=tokenizer,
-                config=config) if config['test_dataset'] else None
+                config=config,
+                is_train=False) if config['test_dataset'] else None    # Không augment test
     return [train_dataset, valid_dataset, test_dataset]
 
 def create_sampler(datasets, shuffles, num_gpus, global_rank):
@@ -207,7 +244,7 @@ def create_sampler(datasets, shuffles, num_gpus, global_rank):
         samplers.append(sampler)
     return samplers     
 
-def create_loader(datasets, samplers, batch_size, is_trains, num_workers=0):
+def create_loader(datasets, samplers, batch_size, is_trains, num_workers=4):
     loaders = []
     for dataset, sampler, bs, is_train in zip(datasets, samplers, batch_size, is_trains):
         if dataset:
@@ -221,12 +258,14 @@ def create_loader(datasets, samplers, batch_size, is_trains, num_workers=0):
                 dataset,
                 batch_size=bs,
                 num_workers=num_workers,
-                pin_memory=True,
+                pin_memory=True,          # Tăng tốc CPU→GPU transfer
                 sampler=sampler,
                 shuffle=shuffle,
                 drop_last=drop_last,
-            )              
+                persistent_workers=(num_workers > 0),  # Tái dùng worker processes
+                prefetch_factor=2 if num_workers > 0 else None,  # Prefetch 2 batch
+            )
             loaders.append(loader)
         else:
             loaders.append(None)
-    return loaders    
+    return loaders

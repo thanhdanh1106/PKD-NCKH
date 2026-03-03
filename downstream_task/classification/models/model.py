@@ -18,11 +18,12 @@ class ImageBertEmbeddings(nn.Module):
         bsz = input_imgs.size(0)
         seq_length = self.args.num_image_embeds + 2  # +2 for CLS and SEP Token
 
-        cls_id = torch.LongTensor([self.args.vocab.stoi["[CLS]"]]).cuda()
+        dev = input_imgs.device
+        cls_id = torch.tensor([self.args.vocab.stoi["[CLS]"]], dtype=torch.long, device=dev)
         cls_id = cls_id.unsqueeze(0).expand(bsz, 1)
         cls_token_embeds = self.word_embeddings(cls_id)
 
-        sep_id = torch.LongTensor([self.args.vocab.stoi["[SEP]"]]).cuda()
+        sep_id = torch.tensor([self.args.vocab.stoi["[SEP]"]], dtype=torch.long, device=dev)
         sep_id = sep_id.unsqueeze(0).expand(bsz, 1)
         sep_token_embeds = self.word_embeddings(sep_id)
 
@@ -30,7 +31,7 @@ class ImageBertEmbeddings(nn.Module):
         token_embeddings = torch.cat(
             [cls_token_embeds, imgs_embeddings, sep_token_embeds], dim=1)
 
-        position_ids = torch.arange(seq_length, dtype=torch.long).cuda()
+        position_ids = torch.arange(seq_length, dtype=torch.long, device=dev)
         position_ids = position_ids.unsqueeze(0).expand(bsz, seq_length)
         position_embeddings = self.position_embeddings(position_ids)
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
@@ -58,9 +59,11 @@ class MultimodalBertEncoder(nn.Module):
 
     def forward(self, input_txt, attention_mask, segment, input_img):
         bsz = input_txt.size(0)
+        # Device-agnostic: dùng device của input tensor thay vì hardcoded .cuda()
+        dev = input_txt.device
         attention_mask = torch.cat(
             [
-                torch.ones(bsz, self.args.num_image_embeds + 2).long().cuda(),
+                torch.ones(bsz, self.args.num_image_embeds + 2, dtype=torch.long, device=dev),
                 attention_mask,
             ],
             dim=1)
@@ -70,14 +73,14 @@ class MultimodalBertEncoder(nn.Module):
             extended_attention_mask = extended_attention_mask.to(
                 dtype=next(self.parameters()).dtype)  # fp16 compatibility
         except StopIteration:
-            extended_attention_mask = extended_attention_mask.to(dtype=torch.float16)
+            extended_attention_mask = extended_attention_mask.to(dtype=torch.float32)
 
         extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
 
-        img_tok = (
-            torch.LongTensor(input_txt.size(0), self.args.num_image_embeds + 2)
-            .fill_(0)
-            .cuda())
+        img_tok = torch.zeros(
+            input_txt.size(0), self.args.num_image_embeds + 2,
+            dtype=torch.long, device=dev
+        )
         img = self.img_encoder(input_img)  # BxNx3x224x224 -> BxNx2048
 
         

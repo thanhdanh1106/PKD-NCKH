@@ -6,6 +6,7 @@ import torch.nn as nn
 from tqdm import tqdm
 from datetime import datetime
 from torch.optim import AdamW
+from torch.cuda.amp import autocast, GradScaler
 from sklearn.metrics import f1_score, accuracy_score, roc_auc_score
 from data.helpers import get_data_loaders
 from models import get_model
@@ -63,15 +64,19 @@ def get_args(parser):
     parser.add_argument("--img_hidden_sz", type=int, default=2048)
     parser.add_argument("--include_bn", type=bool, default=True)
 
-    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--lr", type=float, default=5e-5)    # Tăng từ 1e-4 → 5e-5 với cosine scheduler
     parser.add_argument("--lr_factor", type=float, default=0.5)
-    parser.add_argument("--lr_patience", type=int, default=2)
+    parser.add_argument("--lr_patience", type=int, default=3)  # Giảm patience để scheduler phản ứng nhanh hơn
 
     parser.add_argument("--max_seq_len", type=int, default=512)
     parser.add_argument("--num_image_embeds", type=int, default=256)
 
     parser.add_argument("--warmup", type=float, default=0.1)
     parser.add_argument("--weight_classes", type=int, default=1)
+
+    # T4 GPU optimizations
+    parser.add_argument("--fp16", type=bool, default=True, help="Enable AMP FP16 for T4 GPU Tensor Cores")
+    parser.add_argument("--max_grad_norm", type=float, default=1.0, help="Gradient clipping")
 
     # Added img_size for image preprocessing
     parser.add_argument("--img_size", type=int, default=224, help="size to resize images to (img_size x img_size)")
@@ -224,21 +229,33 @@ def train(args):
         print("Using", torch.cuda.device_count(), "GPUs!")
         model = nn.DataParallel(model)
 
+    # AMP GradScaler cho T4 FP16
+    use_fp16 = getattr(args, 'fp16', False) and torch.cuda.is_available()
+    scaler = GradScaler(enabled=use_fp16)
+    max_grad_norm = getattr(args, 'max_grad_norm', 1.0)
+    if use_fp16:
+        print("AMP FP16: ENABLED for downstream classification")
+
     for i_epoch in range(start_epoch, args.max_epochs):
         train_losses = []
         model.train()
         optimizer.zero_grad()
 
         for batch in tqdm(train_loader, total=len(train_loader)):
-            loss, out, target = model_forward(model, args, criterion, batch, device)
-            if args.gradient_accumulation_steps > 1:
-                loss = loss / args.gradient_accumulation_steps
+            with autocast(enabled=use_fp16):
+                loss, out, target = model_forward(model, args, criterion, batch, device)
+                if args.gradient_accumulation_steps > 1:
+                    loss = loss / args.gradient_accumulation_steps
 
-            train_losses.append(loss.item())
-            loss.backward()
+            train_losses.append(loss.item() * args.gradient_accumulation_steps)
+            scaler.scale(loss).backward()
             global_step += 1
+
             if global_step % args.gradient_accumulation_steps == 0:
-                optimizer.step()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                scaler.step(optimizer)
+                scaler.update()
                 optimizer.zero_grad()
 
         model.eval()
