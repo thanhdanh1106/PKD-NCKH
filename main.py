@@ -49,12 +49,15 @@ def train(config, args):
     print("Creating DataLoaders...")
     num_workers = int(config.get('num_workers', 4))
 
+    pin_memory = bool(config.get('pin_memory', True))
+
     # Train loader
     train_data_loader = create_loader(
         [dset[0]], samplers=[None],
         batch_size=[config['batch_size']],
         is_trains=[True],
-        num_workers=num_workers
+        num_workers=num_workers,
+        pin_memory=pin_memory,
     )[0]
 
     # Validation loader (nếu có)
@@ -64,7 +67,8 @@ def train(config, args):
             [dset[1]], samplers=[None],
             batch_size=[config['batch_size']],
             is_trains=[False],
-            num_workers=num_workers
+            num_workers=num_workers,
+            pin_memory=pin_memory,
         )[0]
         print(f"  Train: {len(dset[0])} samples | Val: {len(dset[1])} samples")
     else:

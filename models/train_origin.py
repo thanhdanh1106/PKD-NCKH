@@ -16,6 +16,8 @@ Improvements:
 """
 import tqdm
 import math
+import time
+import yaml
 import torch
 import torch.nn as nn
 import numpy as np
@@ -161,6 +163,7 @@ class MedViLL_Trainer:
         self.model.train()
         train_losses, mlm_losses, itm_losses = [], [], []
         total_correct, total_element = 0, 0
+        epoch_start = time.time()
 
         train_data_iter = tqdm.tqdm(
             enumerate(self.train_data),
@@ -231,10 +234,12 @@ class MedViLL_Trainer:
             })
 
         avg_loss = np.mean(train_losses)
-        avg_acc = round(total_correct / total_element * 100, 3)
-        print(f"\n[Epoch {epoch}] Train Loss: {avg_loss:.4f} | "
-              f"ITM Loss: {np.mean(itm_losses):.4f} | MLM Loss: {np.mean(mlm_losses):.4f} | "
-              f"Accuracy: {avg_acc}%")
+        avg_acc  = round(total_correct / total_element * 100, 3)
+        elapsed  = time.time() - epoch_start
+        cur_lr   = self.scheduler.get_last_lr()[0]
+        print(f"\n[Epoch {epoch}] Train | Loss: {avg_loss:.4f} | "
+              f"ITM: {np.mean(itm_losses):.4f} | MLM: {np.mean(mlm_losses):.4f} | "
+              f"ACC: {avg_acc}% | LR: {cur_lr:.2e} | ⏱ {elapsed:.0f}s")
         self._log_vram()
         return avg_loss, avg_acc
 
@@ -307,20 +312,24 @@ class MedViLL_Trainer:
 
         model_to_save = self.model.module if hasattr(self.model, 'module') else self.model
 
-        # Lưu bằng torch.save (tránh lỗi tied weights với save_pretrained)
-        model_path = os.path.join(save_path_per_ep, 'pytorch_model.bin')
-        torch.save(model_to_save.state_dict(), model_path)
+        # Model weights
+        torch.save(model_to_save.state_dict(),
+                   os.path.join(save_path_per_ep, 'pytorch_model.bin'))
 
-        # Lưu config để có thể load lại
+        # BERT config (reload-able)
         if hasattr(model_to_save, 'config'):
             model_to_save.config.save_pretrained(save_path_per_ep)
 
-        # Lưu optimizer/scheduler state để resume training
+        # Training config YAML → đảm bảo reproducibility
+        with open(os.path.join(save_path_per_ep, 'pretrain_config.yaml'), 'w') as f:
+            yaml.dump(self.configs, f, default_flow_style=False, allow_unicode=True)
+
+        # Optimizer / scheduler / scaler state → resume training
         torch.save({
             'epoch': epoch,
             'optimizer': self.optimizer.state_dict(),
             'scheduler': self.scheduler.state_dict(),
-            'scaler': self.scaler.state_dict(),
+            'scaler':    self.scaler.state_dict(),
             'best_val_loss': self.best_val_loss,
         }, os.path.join(save_path_per_ep, 'training_state.pth'))
 
@@ -330,7 +339,10 @@ class MedViLL_Trainer:
         if is_best:
             best_path = os.path.join(file_path, 'best_model')
             os.makedirs(best_path, exist_ok=True)
-            torch.save(model_to_save.state_dict(), os.path.join(best_path, 'pytorch_model.bin'))
+            torch.save(model_to_save.state_dict(),
+                       os.path.join(best_path, 'pytorch_model.bin'))
             if hasattr(model_to_save, 'config'):
                 model_to_save.config.save_pretrained(best_path)
+            with open(os.path.join(best_path, 'pretrain_config.yaml'), 'w') as f:
+                yaml.dump(self.configs, f, default_flow_style=False, allow_unicode=True)
             print(f"Best model saved → {best_path}")

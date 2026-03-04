@@ -1,25 +1,28 @@
 # ============================================================
 # MedViLL Pre-training Config - Optimized for T4 15GB VRAM
+# Dataset: OpenI full (3547 train / 710 valid / 354 test)
 # Target: ACC >= 90%, Loss minimized
 # ============================================================
 
-# --- Dataset paths (update paths for your environment) ---
-train_dataset: "data/openi/Train.jsonl"
-valid_dataset: "data/openi/Valid.jsonl"
-test_dataset: ""
-img_dir: "data/dataset/open_i/512_3ch" # Thư mục chứa ảnh thực tế
+# --- Dataset paths ---
+# Dùng data/dataset/openi/ (ảnh khớp 100%, text đầy đủ, 3547 samples)
+train_dataset: "data/dataset/openi/Train.jsonl"
+valid_dataset: "data/dataset/openi/Valid.jsonl"
+test_dataset: "data/dataset/openi/Test.jsonl"
+img_dir: "data/dataset/open_i/512_3ch"
 
 # --- Training schedule ---
-epochs: 20 # 20 epoch để model học đủ
-batch_size: 128 # Tăng lên 128 để tận dụng 15GB VRAM T4 (~10-12GB)
-num_workers: 2 # Giảm xuống 2 cho Colab (hệ thống khuyến cáo max 2)
-gradient_accumulation_steps: 1 # Effective batch = 128 (không cần accumulate)
+epochs: 30 # Tăng 20→30: dataset lớn hơn + seq_len dài hơn
+batch_size: 64 # 64 với seq_len=128: VRAM ~10-11GB (an toàn T4)
+num_workers: 4 # 4 workers tối ưu Colab
+gradient_accumulation_steps: 2 # Effective batch = 64×2 = 128 (giữ nguyên độ ổn định)
+pin_memory: true # Faster CPU→GPU transfer
 
 # --- Image config ---
 img_encoder: "ViT"
 img_size: 224
 img_embed_pool_type: "max"
-num_image_embeds: 196 # 14x14 patches từ ViT patch_size=16
+num_image_embeds: 196 # 14×14 patches từ ViT patch_size=16
 img_channel: 3
 image_res: 224
 vision_width: 768
@@ -30,16 +33,16 @@ hidden_size: 768
 temp: 0.07
 
 # --- Optimizer (AdamW) ---
-lr: 1e-4 # Tăng LR cho batch lớn (linear scaling rule)
+lr: 5.0e-5 # 5e-5: ổn định hơn 1e-4 với BERT pretrained weights
 beta1: 0.9
-beta2: 0.999
+beta2: 0.98 # 0.98 thay 0.999: hội tụ nhanh hơn với transformer
 eps: 1e-6
 weight_decay: 0.01
 
 # --- LR Scheduler: Cosine Annealing với Linear Warmup ---
-warmup: 0.1 # 10% steps đầu dùng linear warmup
-warmup_steps: 0 # Nếu > 0, dùng warmup_steps cố định thay vì warmup ratio
-min_lr: 1e-6 # Learning rate tối thiểu khi cosine về 0
+warmup: 0.06 # 6% warmup (chuẩn BERT pre-training)
+warmup_steps: 0 # 0 = tính từ warmup ratio
+min_lr: 1.0e-6 # LR tối thiểu cuối schedule
 
 # --- BERT tokenizer ---
 tokenizer: "bert-base-uncased"
@@ -47,20 +50,20 @@ bert_model: "bert-base-uncased"
 vocab_size: 30522
 
 # --- Sequence ---
-seq_len: 64 # Tăng từ 32 → 64 để học được nhiều ngữ cảnh hơn
+seq_len: 128 # 128 thay 64: capture đủ nội dung report (+30% context)
 max_seq_len: 512
 
 # --- T4 GPU optimizations ---
-fp16: true # Bật AMP FP16 cho T4 Tensor Cores (~2x speedup)
-gradient_checkpointing: false # Tắt → training nhanh hơn 2x (đủ VRAM với T4 15GB)
+fp16: true # AMP FP16 Tensor Cores (~2x speedup, ~50% VRAM)
+gradient_checkpointing: false # false: nhanh hơn; bật nếu OOM
 
 # --- Loss weights ---
-mlm_weight: 1.0 # Trọng số MLM loss
-itm_weight: 1.0 # Trọng số ITM loss
-label_smoothing: 0.1 # Label smoothing giúp tránh overfit
+mlm_weight: 1.0 # MLM: tái tạo masked tokens
+itm_weight: 1.0 # ITM: khớp ảnh-text
+label_smoothing: 0.1 # Tránh overfit trên dataset nhỏ
 
 # --- Early stopping ---
-patience: 5 # Dừng sớm nếu val loss không giảm sau 5 epoch
+patience: 7 # Tăng 5→7: cho model thêm cơ hội phục hồi
 
 # --- Gradient clipping ---
-max_grad_norm: 1.0 # Clip gradient để ổn định training
+max_grad_norm: 1.0 # Ổn định gradient, chuẩn cho transformer

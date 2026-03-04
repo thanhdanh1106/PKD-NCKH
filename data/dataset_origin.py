@@ -66,7 +66,7 @@ class CXRDataset(Dataset):
         self.is_train = is_train
         if data_path.split('.')[-1] == 'jsonl':    
             self.data_dir = os.path.dirname(data_path)
-            self.data = [json.loads(l) for l in open(data_path)]
+            self.data = [json.loads(l) for l in open(data_path, encoding='utf-8')]
         else:
             assert data_path.endswith(".csv")
             self.data = pd.read_csv(data_path)       
@@ -81,6 +81,15 @@ class CXRDataset(Dataset):
         self.vocab_len = len(self.vocab_stoi)
         # Chọn augmentation dựa trên train/val/test
         self.transform = get_transforms(is_train=is_train)
+
+        # Cache index: label -> [list of indices] để tăng tốc negative sampling
+        # Thay vì loop 300 lần random, dùng lookup O(1)
+        self._label_index: dict = {}
+        if data_path.endswith('.jsonl'):
+            for i, item in enumerate(self.data):
+                lbl = item.get('label', '')
+                self._label_index.setdefault(lbl, []).append(i)
+        self._all_labels = list(self._label_index.keys())
         
     def __len__(self):
         return len(self.data)
@@ -199,27 +208,32 @@ class CXRDataset(Dataset):
         return tokens, output_label
 
     def random_pair_sampling(self, idx):
-        # Sửa để khớp với định dạng thực tế: {"id", "label", "text", "img"}
+        # Khớp với định dạng: {"id", "label", "text", "img"}
         data_item = self.data[idx]
         d_label = data_item['label']
-        d_txt = data_item['text']  # Dùng 'text' thay vì 'caption'
-        d_img = data_item['img']   # Dùng 'img' thay vì 'image'
-        itm_prob = random.random()
+        d_txt   = data_item['text']
+        d_img   = data_item['img']
 
-        if itm_prob > 0.5:
+        if random.random() > 0.5:
+            # Positive pair: ảnh + text khớp
             return d_txt, d_img, 1
         else:
-            for _ in range(300):
-                random_txt, random_label = self.get_random_line()
-                if fuzz.token_sort_ratio(d_label, random_label) != 100:
-                    return random_txt, d_img, 0
-                else:
-                    pass
-            return random_txt, d_img, 0
+            # Negative pair: dùng label-cache để tìm hard negative nhanh hơn
+            # Tìm label khác d_label → lấy ngẫu nhiên 1 sample từ nhóm đó
+            diff_labels = [l for l in self._all_labels
+                           if fuzz.token_sort_ratio(d_label, l) != 100]
+            if diff_labels and self._label_index:
+                chosen_label = random.choice(diff_labels)
+                neg_idx = random.choice(self._label_index[chosen_label])
+                return self.data[neg_idx]['text'], d_img, 0
+            else:
+                # Fallback: random sample (dataset quá nhỏ hoặc 1 class)
+                rand_num = random.randint(0, len(self.data) - 1)
+                return self.data[rand_num]['text'], d_img, 0
 
     def get_random_line(self):
         rand_num = random.randint(0, len(self.data) - 1)
-        txt = self.data[rand_num]['text']  # Dùng 'text'
+        txt   = self.data[rand_num]['text']
         label = self.data[rand_num]['label']
         return txt, label
 
@@ -251,7 +265,7 @@ def create_sampler(datasets, shuffles, num_gpus, global_rank):
         samplers.append(sampler)
     return samplers     
 
-def create_loader(datasets, samplers, batch_size, is_trains, num_workers=4):
+def create_loader(datasets, samplers, batch_size, is_trains, num_workers=4, pin_memory=True):
     loaders = []
     for dataset, sampler, bs, is_train in zip(datasets, samplers, batch_size, is_trains):
         if dataset:
@@ -265,7 +279,7 @@ def create_loader(datasets, samplers, batch_size, is_trains, num_workers=4):
                 dataset,
                 batch_size=bs,
                 num_workers=num_workers,
-                pin_memory=True,          # Tăng tốc CPU→GPU transfer
+                pin_memory=pin_memory,    # CPU→GPU transfer (from config)
                 sampler=sampler,
                 shuffle=shuffle,
                 drop_last=drop_last,
