@@ -1,31 +1,47 @@
 import functools
 import json
 import os
+import torch
+from collections import Counter
 from torch.utils.data import DataLoader
 from torchvision import transforms
-from .dataset import JsonlDataset
 from transformers import BertTokenizer
-from torch.utils.data import DataLoader
 
 from data.dataset import JsonlDataset
 from data.vocab import Vocab
 
 
-def get_transforms(args):
-    if args.openi:
-        return transforms.Compose(
-            [
-                transforms.Grayscale(num_output_channels=3),
-                transforms.ToTensor(),
-                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-            ])
+def get_transforms(args, is_train: bool = True):
+    """
+    Train: RandomResizedCrop + HorizontalFlip + ColorJitter + RandomAffine
+           → tăng tính đa dạng dữ liệu, giảm overfitting
+    Val/Test: Resize + CenterCrop (deterministic)
+    """
+    mean = [0.485, 0.456, 0.406]
+    std  = [0.229, 0.224, 0.225]
+    img_size = getattr(args, 'img_size', 224)
+
+    if is_train:
+        base = [
+            transforms.RandomResizedCrop(img_size, scale=(0.75, 1.0), ratio=(0.85, 1.15)),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomRotation(degrees=10),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.1, hue=0.0),
+            transforms.RandomAffine(degrees=0, shear=5),
+        ]
+        if args.openi:
+            base = [transforms.Grayscale(num_output_channels=3)] + base
+        base += [transforms.ToTensor(), transforms.Normalize(mean, std)]
+        return transforms.Compose(base)
     else:
-        return transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-            ]
-    )
+        base = [
+            transforms.Resize(int(img_size * 256 / 224)),
+            transforms.CenterCrop(img_size),
+        ]
+        if args.openi:
+            base = [transforms.Grayscale(num_output_channels=3)] + base
+        base += [transforms.ToTensor(), transforms.Normalize(mean, std)]
+        return transforms.Compose(base)
 
 
 def get_labels_and_frequencies(path):
@@ -93,53 +109,72 @@ def collate_fn(batch, args):
 
 def get_data_loaders(args):
     train_path = os.path.join(args.data_path, args.Train_dset_name)
-    
+
+    # ---------- labels ----------
     all_labels = set()
     with open(train_path) as f:
         for line in f:
             data = json.loads(line)
             if data["label"]:
-                labels = data["label"].split(', ') if isinstance(data["label"], str) else data["label"]
+                labels = (
+                    data["label"].split(', ')
+                    if isinstance(data["label"], str)
+                    else data["label"]
+                )
                 all_labels.update(labels)
-    
+
     args.labels = sorted(list(all_labels))
     args.n_classes = len(args.labels)
-    
 
     tokenizer = BertTokenizer.from_pretrained(args.bert_model)
-    vocab = get_vocab(args)  # You'll need to implement this if it doesn't exist
-    
-    transform = transforms.Compose([
-        transforms.Resize((args.img_size, args.img_size)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                           std=[0.229, 0.224, 0.225]),
-    ])
+    vocab = get_vocab(args)
+    args.vocab = vocab  # needed by ImageBertEmbeddings for CLS/SEP token lookup
+
+    # ---------- separate train/val transforms ----------
+    train_transform = get_transforms(args, is_train=True)
+    val_transform   = get_transforms(args, is_train=False)
 
     img_path = os.path.join(args.data_path, "images")
 
     train_dataset = JsonlDataset(
         data_path=os.path.join(args.data_path, args.Train_dset_name),
         tokenizer=tokenizer,
-        transforms=transform,  # Changed from transform to transforms
+        transforms=train_transform,
         vocab=vocab,
         args=args,
         img_path=img_path,
-        test=False
+        test=False,
     )
 
     val_dataset = JsonlDataset(
         data_path=os.path.join(args.data_path, args.Valid_dset_name),
         tokenizer=tokenizer,
-        transforms=transform,
+        transforms=val_transform,
         vocab=vocab,
         args=args,
         img_path=img_path,
-        test=True
+        test=True,
     )
 
-    # Rest of your DataLoader code remains the same
-    train_loader = DataLoader(...)
-    val_loader = DataLoader(...)
-    
+    args.train_data_len = len(train_dataset)
+
+    collate = functools.partial(collate_fn, args=args)
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_sz,
+        shuffle=True,
+        num_workers=args.n_workers,
+        pin_memory=True,
+        collate_fn=collate,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=args.batch_sz,
+        shuffle=False,
+        num_workers=args.n_workers,
+        pin_memory=True,
+        collate_fn=collate,
+    )
+
     return train_loader, val_loader

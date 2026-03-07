@@ -55,7 +55,7 @@ class MultimodalBertEncoder(nn.Module):
         self.img_encoder = ImageEncoder(args)
         self.encoder = bert.encoder
         self.pooler = bert.pooler
-        self.clf = nn.Linear(args.hidden_sz, args.n_classes)
+        # Note: classification head lives in MultimodalBertClf.head, not here
 
     def forward(self, input_txt, attention_mask, segment, input_img):
         bsz = input_txt.size(0)
@@ -92,12 +92,30 @@ class MultimodalBertEncoder(nn.Module):
 
 
 class MultimodalBertClf(nn.Module):
+    """
+    Thay single Linear bằng deep MLP head:
+      Pool(768) → Dropout → Linear(768→512) → GELU → LayerNorm(512)
+                → Dropout → Linear(512→n_classes)
+    Tăng capacity của head giúp model học được biểu diễn phân loại tốt hơn,
+    đặc biệt với multimodal features phức tạp từ CXR + text.
+    """
     def __init__(self, args):
         super(MultimodalBertClf, self).__init__()
         self.args = args
         self.enc = MultimodalBertEncoder(args)
-        self.clf = nn.Linear(args.hidden_sz, args.n_classes)
+
+        dropout_p = getattr(args, 'dropout', 0.2)
+        hidden_mid = 512
+
+        self.head = nn.Sequential(
+            nn.Dropout(p=dropout_p),
+            nn.Linear(args.hidden_sz, hidden_mid),
+            nn.GELU(),
+            nn.LayerNorm(hidden_mid),
+            nn.Dropout(p=dropout_p),
+            nn.Linear(hidden_mid, args.n_classes),
+        )
 
     def forward(self, txt, mask, segment, img):
         x = self.enc(txt, mask, segment, img)
-        return self.clf(x)
+        return self.head(x)

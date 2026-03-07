@@ -1,22 +1,50 @@
 import os
 import csv
 import argparse
+import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from tqdm import tqdm
 from datetime import datetime
 from torch.optim import AdamW
 from torch.cuda.amp import autocast, GradScaler
+from transformers import get_cosine_schedule_with_warmup
 from sklearn.metrics import f1_score, accuracy_score, roc_auc_score
 from data.helpers import get_data_loaders
 from models import get_model
 from utils.logger import create_logger
 from utils.utils import *
 
+
+# ------------------------------------------------------------------
+# Focal Loss – giảm đóng góp của easy negatives,
+# giúp model tập trung học hard examples → loss hội tụ nhanh hơn
+# ------------------------------------------------------------------
+class FocalLoss(nn.Module):
+    """
+    Binary Focal Loss for multilabel classification.
+    FL(p_t) = -(1 - p_t)^gamma * log(p_t)
+    gamma=2 (default): bỏ qua easy examples, tập trung vào hard ones
+    """
+    def __init__(self, gamma: float = 2.0, pos_weight=None):
+        super().__init__()
+        self.gamma = gamma
+        self.pos_weight = pos_weight
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        bce = F.binary_cross_entropy_with_logits(
+            logits, targets, pos_weight=self.pos_weight, reduction='none'
+        )
+        probs = torch.sigmoid(logits)
+        pt = targets * probs + (1.0 - targets) * (1.0 - probs)
+        focal_weight = (1.0 - pt) ** self.gamma
+        return (focal_weight * bce).mean()
+
 def get_args(parser):
     parser.add_argument("--seed", type=int, default=123)
-    parser.add_argument("--batch_sz", type=int, default=20)
-    parser.add_argument("--max_epochs", type=int, default=10)
+    parser.add_argument("--batch_sz", type=int, default=16)
+    parser.add_argument("--max_epochs", type=int, default=30)
     parser.add_argument("--task_type", type=str, default="multilabel", choices=["multilabel", "classification"])
     parser.add_argument("--n_workers", type=int, default=8)
     parser.add_argument("--patience", type=int, default=10)
@@ -48,7 +76,7 @@ def get_args(parser):
                        choices=["bert-base-uncased"])
 
     parser.add_argument("--drop_img_percent", type=float, default=0.0)
-    parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--dropout", type=float, default=0.2)  # tăng từ 0.1 → 0.2 cho regularization tốt hơn
 
     parser.add_argument("--freeze_img", type=int, default=0)
     parser.add_argument("--freeze_txt", type=int, default=0)
@@ -57,21 +85,21 @@ def get_args(parser):
     parser.add_argument("--freeze_txt_all", type=bool, default=True)
 
     parser.add_argument("--glove_path", type=str, default="/path/to/glove_embeds/glove.840B.300d.txt")
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=4)  # effective batch = 16*4 = 64
     parser.add_argument("--hidden", nargs="*", type=int, default=[])
 
     parser.add_argument("--img_embed_pool_type", type=str, default="avg", choices=["max", "avg"])
     parser.add_argument("--img_hidden_sz", type=int, default=2048)
     parser.add_argument("--include_bn", type=bool, default=True)
 
-    parser.add_argument("--lr", type=float, default=5e-5)    # Tăng từ 1e-4 → 5e-5 với cosine scheduler
+    parser.add_argument("--lr", type=float, default=2e-4)    # head LR; backbone lấy 0.1x = 2e-5
     parser.add_argument("--lr_factor", type=float, default=0.5)
-    parser.add_argument("--lr_patience", type=int, default=3)  # Giảm patience để scheduler phản ứng nhanh hơn
+    parser.add_argument("--lr_patience", type=int, default=3)  # giữ lại cho backward compat
 
     parser.add_argument("--max_seq_len", type=int, default=512)
     parser.add_argument("--num_image_embeds", type=int, default=256)
 
-    parser.add_argument("--warmup", type=float, default=0.1)
+    parser.add_argument("--warmup", type=float, default=0.1)  # 10% warmup
     parser.add_argument("--weight_classes", type=int, default=1)
 
     # T4 GPU optimizations
@@ -86,37 +114,65 @@ def get_args(parser):
                       help="Label frequencies for weighted loss")
 
 def get_criterion(args, device):
+    """
+    Multilabel: FocalLoss với pos_weight để xử lý class imbalance.
+    Classification: CrossEntropyLoss với label_smoothing.
+    """
     if args.task_type == "multilabel":
-        if args.weight_classes:
+        pos_weight = None
+        if args.weight_classes and hasattr(args, 'label_freqs') and args.label_freqs:
             freqs = [args.label_freqs[l] for l in args.labels]
-            negative = [args.train_data_len - l for l in freqs]
-            label_weights = (torch.FloatTensor(freqs) / torch.FloatTensor(negative)) ** -1
-            criterion = nn.BCEWithLogitsLoss(pos_weight=label_weights.to(device))
-        else:
-            criterion = nn.BCEWithLogitsLoss()
+            negative = [max(args.train_data_len - f, 1) for f in freqs]
+            pos_weight = (torch.FloatTensor(negative) / torch.FloatTensor(freqs)).to(device)
+        criterion = FocalLoss(gamma=2.0, pos_weight=pos_weight)
     else:
-        criterion = nn.CrossEntropyLoss()
+        criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
     return criterion
 
 def get_optimizer(model, args):
-    total_steps = (
-        args.train_data_len
-        / args.batch_sz
-        / args.gradient_accumulation_steps
-        * args.max_epochs
+    """
+    Differential learning rate:
+      - Pre-trained backbone (ResNet50 + BERT encoder): lr * 0.1
+      - New layers (img_embeddings projection + classifier head): lr
+    Giúp fine-tune backbone nhẹ nhàng mà không làm mất pre-trained features.
+    """
+    enc = model.enc
+    backbone_params = (
+        list(enc.img_encoder.parameters())
+        + list(enc.encoder.parameters())
+        + list(enc.txt_embeddings.parameters())
+        + list(enc.pooler.parameters())
     )
+    backbone_ids = {id(p) for p in backbone_params}
+    head_params = [p for p in model.parameters() if id(p) not in backbone_ids]
+
     optimizer = AdamW(
-        model.parameters(),
-        lr=args.lr,
-        weight_decay=0.01,
+        [
+            {"params": backbone_params, "lr": args.lr * 0.1, "weight_decay": 0.01},
+            {"params": head_params,     "lr": args.lr,       "weight_decay": 0.01},
+        ],
         betas=(0.9, 0.999),
-        eps=1e-8
+        eps=1e-8,
     )
     return optimizer
 
 def get_scheduler(optimizer, args):
-    return torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, "max", patience=args.lr_patience, verbose=True, factor=args.lr_factor
+    """
+    Cosine Annealing với Linear Warmup:
+      - Warmup 10% đầu: LR tăng tuyến tính → tránh divergence giai đoạn đầu
+      - Cosine decay: giảm mượt mà đến lr_min, tốt hơn ReduceLROnPlateau
+    Gọi scheduler.step() sau mỗi gradient update (không phải sau mỗi epoch).
+    """
+    total_steps = max(
+        1,
+        int(args.train_data_len / args.batch_sz / args.gradient_accumulation_steps)
+        * args.max_epochs,
+    )
+    warmup_steps = int(total_steps * args.warmup)
+    return get_cosine_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=warmup_steps,
+        num_training_steps=total_steps,
     )
 
 def model_eval(data, model, args, criterion, device, store_preds=False):
@@ -171,25 +227,15 @@ def model_eval(data, model, args, criterion, device, store_preds=False):
 
 def model_forward(model, args, criterion, batch, device):
     # Extract from dictionary (JsonlDataset output)
-    txt = batch['input_ids'].to(device)
+    txt  = batch['input_ids'].to(device)
     mask = batch['attention_mask'].to(device)
-    img = batch['image'].to(device)
-    tgt = batch['label'].to(device)
-    
-    # Create segment (token type IDs, usually zeros for single sentences)
-    segment = torch.zeros_like(txt).to(device)
+    img  = batch['image'].to(device)
+    tgt  = batch['label'].to(device)
 
-    # Handle model freezing
-    model.to(device)
-    if args.num_image_embeds > 0:
-        for param in (model.module.enc.img_encoder.parameters() if hasattr(model, 'module') else model.enc.img_encoder.parameters()):
-            param.requires_grad = args.freeze_img_all
-    for param in (model.module.enc.encoder.parameters() if hasattr(model, 'module') else model.enc.encoder.parameters()):
-        param.requires_grad = args.freeze_txt_all
+    # segment = token-type IDs (zeros for single sentence)
+    segment = torch.zeros_like(txt)
 
-    # Forward pass (positional arguments for MultimodalBertClf)
-    out = model(txt, mask, segment, img)
-
+    out  = model(txt, mask, segment, img)
     loss = criterion(out, tgt)
     return loss, out, tgt
 
@@ -219,6 +265,16 @@ def train(args):
         print("Loaded pre-trained model, fine-tuning.")
     else:
         print("Initializing model with random weights, training from scratch.")
+
+    # ----------------------------------------------------------------
+    # Freeze / unfreeze backbone tương ứng với args (chỉ set 1 lần)
+    # freeze_img_all / freeze_txt_all = True  → trainable (requires_grad=True)
+    #                                   False → frozen  (requires_grad=False)
+    # ----------------------------------------------------------------
+    for param in model.enc.img_encoder.parameters():
+        param.requires_grad = args.freeze_img_all
+    for param in model.enc.encoder.parameters():
+        param.requires_grad = args.freeze_txt_all
 
     print("Freeze image?", args.freeze_img_all)
     print("Freeze text?", args.freeze_txt_all)
@@ -257,6 +313,7 @@ def train(args):
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad()
+                scheduler.step()  # cosine warmup: step per gradient update
 
         model.eval()
         metrics, classACC, tgts, preds = model_eval(val_loader, model, args, criterion, device)
@@ -266,7 +323,6 @@ def train(args):
         tuning_metric = (
             metrics["micro_f1"] if args.task_type == "multilabel" else metrics["acc"]
         )
-        scheduler.step(tuning_metric)
         is_improvement = tuning_metric > best_metric
         if is_improvement:
             best_metric = tuning_metric
