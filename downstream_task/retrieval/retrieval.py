@@ -25,6 +25,7 @@ from torch.utils.data import Dataset, DataLoader
 from transformers.optimization import AdamW
 from transformers import BertTokenizer
 from transformers import BertConfig, AutoConfig
+from scipy import stats
 
 from model import CXRBertForRetrieval
 
@@ -258,6 +259,40 @@ def compute_mrr(ranks):
     # mrr_score = np.mean(np.divide(1, ranks, out=np.zeros_like(ranks), where=ranks!=0))
     return mrr_score
 
+
+def bootstrap_pvalue_retrieval(ranks, n_bootstrap=1000, seed=42):
+    """Bootstrap p-value: kiểm định MRR so với baseline ngẫu nhiên.
+    Baseline MRR = 1 / eval_len_size (random ranking).
+    H0: MRR_model <= MRR_baseline  ->  p-value nhỏ = model tốt có ý nghĩa thống kê.
+    """
+    rng = np.random.default_rng(seed)
+    ranks = np.array(ranks, dtype=float)
+    n = len(ranks)
+    observed_mrr = float(np.mean(np.reciprocal(ranks + 1)))
+    boot_mrr = []
+    for _ in range(n_bootstrap):
+        sample = rng.choice(ranks, size=n, replace=True)
+        boot_mrr.append(float(np.mean(np.reciprocal(sample + 1))))
+    boot_mrr = np.array(boot_mrr)
+    # two-sided t-test of bootstrap distribution against observed value
+    _, p_val = stats.ttest_1samp(boot_mrr, observed_mrr)
+    return observed_mrr, float(p_val)
+
+
+def bootstrap_pvalue_hits(ranks, k=5, n_bootstrap=1000, seed=42):
+    """Bootstrap p-value cho Hits@k."""
+    rng = np.random.default_rng(seed)
+    ranks = np.array(ranks, dtype=float)
+    n = len(ranks)
+    observed_h = float(np.mean(ranks < k))
+    boot_h = []
+    for _ in range(n_bootstrap):
+        sample = rng.choice(ranks, size=n, replace=True)
+        boot_h.append(float(np.mean(sample < k)))
+    boot_h = np.array(boot_h)
+    _, p_val = stats.ttest_1samp(boot_h, observed_h)
+    return observed_h, float(p_val)
+
 def evaluate(args, test_results, test_labels, idx_lst):  # hits at n score, n = [1, 5, 10]
     i2t_ranks, t2i_ranks, Aligned_lst = compute_ranks(args, test_results, test_labels, idx_lst)
     recall_precision_results = compute_recall_precision(args, test_results, test_labels, idx_lst)
@@ -267,11 +302,18 @@ def evaluate(args, test_results, test_labels, idx_lst):  # hits at n score, n = 
         i2t_accs = [sum([_ < r for _ in i2t_ranks]) / len(i2t_ranks) for r in rank]
         eval_result = {"i2t_retrieval": {"R@1": i2t_accs[0], "R@5": i2t_accs[1], "R@10": i2t_accs[2]}}
         mrr_score = compute_mrr(i2t_ranks)
+        _, p_mrr  = bootstrap_pvalue_retrieval(i2t_ranks)
+        _, p_h5   = bootstrap_pvalue_hits(i2t_ranks, k=5)
+        ranks_used = i2t_ranks
     elif args.t2i:
         t2i_accs = [sum([_ < r for _ in t2i_ranks]) / len(t2i_ranks) for r in rank]
         eval_result["t2i_retrieval"] = {"R@1": t2i_accs[0], "R@5": t2i_accs[1], "R@10": t2i_accs[2]}
         mrr_score = compute_mrr(t2i_ranks)
-    return eval_result, Aligned_lst, mrr_score, recall_precision_results
+        _, p_mrr  = bootstrap_pvalue_retrieval(t2i_ranks)
+        _, p_h5   = bootstrap_pvalue_hits(t2i_ranks, k=5)
+        ranks_used = t2i_ranks
+    pvalue_results = {"p_mrr": p_mrr, "p_h5": p_h5}
+    return eval_result, Aligned_lst, mrr_score, recall_precision_results, pvalue_results
 
 def train(args, train_dataset, val_dataset, model, tokenizer, dset):
     optimizer = AdamW(model.parameters(), lr=args.lr)
@@ -336,7 +378,7 @@ def train(args, train_dataset, val_dataset, model, tokenizer, dset):
         # Evaluate during training
         if args.eval_during_training:  # and epoch > 4:
             test_result, test_label, test_losses, idx_lst = test(args, model, val_dataset)
-            eval_result, Aligned_lst, mrr_score, recall_precision_results = evaluate(args, test_result, test_label, idx_lst)
+            eval_result, Aligned_lst, mrr_score, recall_precision_results, pvalue_results = evaluate(args, test_result, test_label, idx_lst)
 
             file_data = OrderedDict()
             result_path = os.path.join(args.output_path, 'rank_result_at_eval.json')
@@ -372,6 +414,7 @@ def train(args, train_dataset, val_dataset, model, tokenizer, dset):
                   f'Hit@1:{H1}, Hit@5:{H5}, Hit@10:{H10}, best_Hit1:{best_score},'
                   f'Recall@1:{R1}, Recall@5:{R5}, Recall@10:{R10},'
                   f'Precision@1:{P1}, Precision@1:{P5}, Precision@1:{P10}')
+            print(f'  p-value(MRR):{pvalue_results["p_mrr"]:.4f}, p-value(H@5):{pvalue_results["p_h5"]:.4f}')
             
 
 def test(args, model, eval_dataset):
@@ -451,7 +494,7 @@ def main(args):
         best_score = 0
 
         test_result, test_label, test_losses, idx_lst = test(args, model, eval_dataloader)
-        eval_result, Aligned_lst, mrr_score, recall_precision_results = evaluate(args, test_result, test_label, idx_lst)
+        eval_result, Aligned_lst, mrr_score, recall_precision_results, pvalue_results = evaluate(args, test_result, test_label, idx_lst)
 
         file_data = OrderedDict()
         result_path = os.path.join(args.output_path, 'rank_result_at_eval.json')
@@ -499,6 +542,7 @@ def main(args):
               f'Hit@1:{H1}, Hit@5:{H5}, Hit@10:{H10}, best_Hit1:{best_score},'
               f'Recall@1:{R1}, Recall@5:{R5}, Recall@10:{R10},'
               f'Precision@1:{P1}, Precision@5:{P5}, Precision@10:{P10}')
+        print(f'  p-value(MRR):{pvalue_results["p_mrr"]:.4f}, p-value(H@5):{pvalue_results["p_h5"]:.4f}')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

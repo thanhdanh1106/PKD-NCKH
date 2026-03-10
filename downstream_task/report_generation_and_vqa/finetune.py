@@ -33,6 +33,7 @@ import utils
 import pickle
 from collections import defaultdict
 import time
+from scipy import stats
 
 def _get_max_epoch_model(output_dir):
     fn_model_list = glob.glob(os.path.join(output_dir, "model.*.bin"))
@@ -541,7 +542,24 @@ def vqa_eval(args, device, logger, bi_uni_pipeline, tokenizer, model, results_di
         torch.cuda.empty_cache()
         end = time.time()
         print(end - start)
-        
+
+    # --- p-value (bootstrap t-test: so sánh distribution với mean của chính nó) ---
+    if len(results_dict['open_acc']) > 1:
+        _, p_open   = stats.ttest_1samp(results_dict['open_acc'],   np.mean(results_dict['open_acc']))
+        _, p_closed = stats.ttest_1samp(results_dict['closed_acc'], np.mean(results_dict['closed_acc']))
+        _, p_total  = stats.ttest_1samp(results_dict['total_acc'],  np.mean(results_dict['total_acc']))
+    else:
+        p_open = p_closed = p_total = float('nan')
+    print(f'[VQA Bootstrap Results] '
+          f'Open-Ended acc: {np.mean(results_dict["open_acc"]):.4f} ± {np.std(results_dict["open_acc"]):.4f} | '
+          f'p-value(O.E.): {p_open:.4f}')
+    print(f'[VQA Bootstrap Results] '
+          f'Closed-Ended acc: {np.mean(results_dict["closed_acc"]):.4f} ± {np.std(results_dict["closed_acc"]):.4f} | '
+          f'p-value(C.E.): {p_closed:.4f}')
+    print(f'[VQA Bootstrap Results] '
+          f'Total acc: {np.mean(results_dict["total_acc"]):.4f} ± {np.std(results_dict["total_acc"]):.4f} | '
+          f'p-value(Total): {p_total:.4f}')
+
     return (total_vqa_acc/len(test_loss))*100, (total_closed_acc/num_close)*100, (total_open_acc/num_open)*100
 
 if __name__ == "__main__":

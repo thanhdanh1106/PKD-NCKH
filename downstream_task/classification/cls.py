@@ -10,7 +10,7 @@ from datetime import datetime
 from torch.optim import AdamW
 from torch.cuda.amp import autocast, GradScaler
 from transformers import get_cosine_schedule_with_warmup
-from sklearn.metrics import f1_score, accuracy_score, roc_auc_score
+from sklearn.metrics import f1_score, accuracy_score, roc_auc_score, precision_score, recall_score
 from data.helpers import get_data_loaders
 from models import get_model
 from utils.logger import create_logger
@@ -210,10 +210,22 @@ def model_eval(data, model, args, criterion, device, store_preds=False):
 
         metrics["micro_roc_auc"] = roc_auc_score(tgts, preds, average="micro")
         metrics["macro_roc_auc"] = roc_auc_score(tgts, preds, average="macro")
-        metrics["macro_f1"] = f1_score(tgts, preds_bool, average="macro")
-        metrics["micro_f1"] = f1_score(tgts, preds_bool, average="micro")
+        metrics["avg_auroc"] = float(np.mean(outAUROC))  # avg AUROC across all classes
+        metrics["macro_f1"]        = f1_score(tgts, preds_bool, average="macro")
+        metrics["micro_f1"]        = f1_score(tgts, preds_bool, average="micro")
+        metrics["avg_f1"]          = float(np.mean([f1_score(tgts[:, i], preds_bool[:, i]) for i in range(tgts.shape[1])]))
+        metrics["macro_precision"] = precision_score(tgts, preds_bool, average="macro", zero_division=0)
+        metrics["micro_precision"] = precision_score(tgts, preds_bool, average="micro", zero_division=0)
+        metrics["avg_precision"]   = float(np.mean([precision_score(tgts[:, i], preds_bool[:, i], zero_division=0) for i in range(tgts.shape[1])]))
+        metrics["macro_recall"]    = recall_score(tgts, preds_bool, average="macro", zero_division=0)
+        metrics["micro_recall"]    = recall_score(tgts, preds_bool, average="micro", zero_division=0)
+        metrics["avg_recall"]      = float(np.mean([recall_score(tgts[:, i], preds_bool[:, i], zero_division=0) for i in range(tgts.shape[1])]))
         print('micro_auc:', metrics["micro_roc_auc"])
+        print('avg_auroc:', metrics["avg_auroc"])
         print('micro_f1:', metrics["micro_f1"])
+        print('avg_f1:', metrics["avg_f1"])
+        print('avg_precision:', metrics["avg_precision"])
+        print('avg_recall:', metrics["avg_recall"])
         print('-----------------------------------------------------')
     else:
         tgts = [l for sl in tgts for l in sl]
@@ -336,8 +348,8 @@ def train(args):
             wr = csv.writer(f)
             key = list(classACC.keys())
             val = list(classACC.values())
-            title = ['micro_auc', 'macro_auc', 'micro_f1', 'macro_f1'] + key
-            result = [metrics["micro_roc_auc"], metrics["macro_roc_auc"], metrics["micro_f1"], metrics["macro_f1"]] + val
+            title = ['micro_auc', 'macro_auc', 'avg_auroc', 'micro_f1', 'macro_f1', 'avg_f1', 'avg_precision', 'avg_recall'] + key
+            result = [metrics["micro_roc_auc"], metrics["macro_roc_auc"], metrics["avg_auroc"], metrics["micro_f1"], metrics["macro_f1"], metrics["avg_f1"], metrics["avg_precision"], metrics["avg_recall"]] + val
             wr.writerow(title)
             wr.writerow(result)
 
@@ -394,10 +406,36 @@ def test(args):
 
     print('micro_roc_auc:', round(metrics["micro_roc_auc"], 3))
     print('macro_roc_auc:', round(metrics["macro_roc_auc"], 3))
+    print('avg_auroc:', round(metrics["avg_auroc"], 3))
     print('macro_f1 f1 score:', round(metrics["macro_f1"], 3))
     print('micro f1 score:', round(metrics["micro_f1"], 3))
+    print('avg_f1:', round(metrics["avg_f1"], 3))
+    print('avg_precision:', round(metrics["avg_precision"], 3))
+    print('avg_recall:', round(metrics["avg_recall"], 3))
     for i in classACC:
         print(i, round(classACC[i], 3))
+
+    # --- Bootstrap p-value (so sánh model vs random baseline 0.5) ---
+    n_bootstrap = 1000
+    rng = np.random.default_rng(42)
+    boot_auroc, boot_f1 = [], []
+    n = tgts.shape[0]
+    for _ in range(n_bootstrap):
+        idx = rng.integers(0, n, size=n)
+        try:
+            b_auroc = np.mean([roc_auc_score(tgts[idx, i], preds[idx, i])
+                               for i in range(tgts.shape[1])])
+        except ValueError:
+            b_auroc = 0.5
+        b_f1 = float(np.mean([f1_score(tgts[idx, i], (preds[idx, i] > 0.5).astype(int))
+                               for i in range(tgts.shape[1])]))
+        boot_auroc.append(b_auroc)
+        boot_f1.append(b_f1)
+    # p-value: tỷ lệ bootstrap samples ≤ baseline 0.5
+    p_auroc = float(np.mean(np.array(boot_auroc) <= 0.5))
+    p_f1    = float(np.mean(np.array(boot_f1)    <= 0.0))
+    print(f'p-value (avg AUROC): {p_auroc:.4f}')
+    print(f'p-value (avg F1):    {p_f1:.4f}')
 
 def cli_main():
     parser = argparse.ArgumentParser(description="Train Models")

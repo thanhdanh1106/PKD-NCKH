@@ -26,6 +26,7 @@ from collections import defaultdict
 import pickle
 import re
 import time
+from scipy import stats
 
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
@@ -349,7 +350,23 @@ def main():
             print("results_dict", results_dict)
             torch.cuda.empty_cache()
 
-        # with open('random100_report_gen.pickle', 'rb') as f:
+        # --- p-value across bootstrap iterations ---
+        def _pval(vals, higher_is_better=True):
+            """One-sample t-test: p-value that mean(vals) is significantly
+            different from the first sample (used as reference baseline)."""
+            if len(vals) < 2:
+                return float('nan')
+            _, p = stats.ttest_1samp(vals, vals[0])
+            return float(p)
+
+        if results_dict['ppl']:
+            print(f'[Bootstrap Summary]')
+            print(f'  Perplexity  : {np.mean(results_dict["ppl"]):.4f} ± {np.std(results_dict["ppl"]):.4f} | p-value: {_pval(results_dict["ppl"], higher_is_better=False):.4f}')
+            print(f'  BLEU-4      : {np.mean(results_dict["bleu4"]):.4f} ± {np.std(results_dict["bleu4"]):.4f} | p-value: {_pval(results_dict["bleu4"]):.4f}')
+            print(f'  Accuracy    : {np.mean(results_dict["accuracy"]):.4f} ± {np.std(results_dict["accuracy"]):.4f} | p-value: {_pval(results_dict["accuracy"]):.4f}')
+            print(f'  Precision   : {np.mean(results_dict["precision"]):.4f} ± {np.std(results_dict["precision"]):.4f} | p-value: {_pval(results_dict["precision"]):.4f}')
+            print(f'  Recall      : {np.mean(results_dict["recall"]):.4f} ± {np.std(results_dict["recall"]):.4f} | p-value: {_pval(results_dict["recall"]):.4f}')
+            print(f'  F1          : {np.mean(results_dict["f1"]):.4f} ± {np.std(results_dict["f1"]):.4f} | p-value: {_pval(results_dict["f1"]):.4f}')
         #     b = pickle.load(f)
 
         # print(results_dict == b)
