@@ -50,6 +50,9 @@ class MultimodalBertEncoder(nn.Module):
             bert = BertModel(config)
         else:
             bert = BertModel.from_pretrained(args.bert_model)
+        # Gradient checkpointing: tái tính activation thay vì lưu hết → ~40% ít VRAM hơn
+        if getattr(args, 'gradient_checkpointing', False):
+            bert.gradient_checkpointing_enable()
         self.txt_embeddings = bert.embeddings
         self.img_embeddings = ImageBertEmbeddings(args, self.txt_embeddings)
         self.img_encoder = ImageEncoder(args)

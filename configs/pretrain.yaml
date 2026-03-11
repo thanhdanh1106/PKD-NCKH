@@ -5,11 +5,11 @@
 # ============================================================
 
 # --- Dataset paths ---
-# Dùng data/dataset/openi/ (ảnh khớp 100%, text đầy đủ, 3547 samples)
+# Dùng data/dataset/openi/ (ảnh khớp 100%, img nằm ở data/dataset/open_i/512_3ch/)
 train_dataset: "data/dataset/openi/Train.jsonl"
 valid_dataset: "data/dataset/openi/Valid.jsonl"
 test_dataset: "data/dataset/openi/Test.jsonl"
-img_dir: "data/dataset/open_i/512_3ch"
+img_dir: "" # để trống: dùng img path có sẵn trong jsonl (relative từ repo root)
 
 # --- Training schedule ---
 epochs: 30 # Tăng 20→30: dataset lớn hơn + seq_len dài hơn

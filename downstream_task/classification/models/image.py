@@ -17,43 +17,26 @@ class ImageEncoder(nn.Module):
     def __init__(self, args):
         super(ImageEncoder, self).__init__()
         self.args = args
-        model = torchvision.models.resnet50(pretrained=True)
-        modules = list(model.children())[:-2]
-        self.model = nn.Sequential(*modules)
-
-        pool_func = (
-            nn.AdaptiveAvgPool2d
-            if args.img_embed_pool_type == "avg"
-            else nn.AdaptiveMaxPool2d
+        # DenseNet121: CheXNet backbone, standard for chest X-ray classification
+        # Dense connections reduce feature redundancy → better pathology detection
+        # 7M params (vs ResNet50 25M), feature dim 1024 (vs 2048)
+        weights = torchvision.models.DenseNet121_Weights.IMAGENET1K_V1
+        model = torchvision.models.densenet121(weights=weights)
+        self.model = model.features          # output: (B, 1024, H, W) before ReLU
+        # num_image_embeds must be a perfect square (e.g. 49=7x7 for 224px input)
+        s = round(args.num_image_embeds ** 0.5)
+        assert s * s == args.num_image_embeds, (
+            f"num_image_embeds={args.num_image_embeds} must be a perfect square "
+            f"(e.g. 49 for img_size=224)"
         )
-
-        if args.num_image_embeds in [1, 2, 3, 5, 7]:
-            self.pool = pool_func((args.num_image_embeds, 1))
-        elif args.num_image_embeds == 4:
-            self.pool = pool_func((2, 2))
-        elif args.num_image_embeds == 6:
-            self.pool = pool_func((3, 2))
-        elif args.num_image_embeds == 8:
-            self.pool = pool_func((4, 2))
-        elif args.num_image_embeds == 9:
-            self.pool = pool_func((3, 3))
+        self.pool = nn.AdaptiveAvgPool2d((s, s))
 
     def forward(self, x):
-        # Bx3x224x224 -> Bx2048x7x7 -> Bx2048xN -> BxNx2048
-
-        # out = self.pool(self.model(x))
-        # out = torch.flatten(out, start_dim=2)
-        # out = out.transpose(1, 2).contiguous()
-        
-        out = self.model(x)
-        out = torch.flatten(out, start_dim=2) #out torch.Size([100, 2048, 3])
-        out = out.transpose(1, 2).contiguous() #out torch.Size([100, 3, 2048])
-
-        # print("out.size()",out.size())
-        # input("STOP!!!")
-        
-
-        return out  # BxNx2048
+        # B x 3 x H x W → B x 1024 x H' x W' → B x num_image_embeds x 1024
+        out = F.relu(self.model(x), inplace=True)  # activate after DenseNet norm5
+        out = self.pool(out)
+        out = torch.flatten(out, start_dim=2)
+        return out.transpose(1, 2).contiguous()
 
 
 class ImageClf(nn.Module):

@@ -23,23 +23,23 @@ def get_transforms(args, is_train: bool = True):
 
     if is_train:
         base = [
+            transforms.Grayscale(num_output_channels=3),
+            transforms.RandomAutoContrast(p=0.5),   # X-ray: simulate CLAHE contrast enhancement
+            transforms.RandomEqualize(p=0.3),         # histogram equalization for low-contrast lesions
             transforms.RandomResizedCrop(img_size, scale=(0.75, 1.0), ratio=(0.85, 1.15)),
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.RandomRotation(degrees=10),
             transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.1, hue=0.0),
             transforms.RandomAffine(degrees=0, shear=5),
         ]
-        if args.openi:
-            base = [transforms.Grayscale(num_output_channels=3)] + base
         base += [transforms.ToTensor(), transforms.Normalize(mean, std)]
         return transforms.Compose(base)
     else:
         base = [
+            transforms.Grayscale(num_output_channels=3),
             transforms.Resize(int(img_size * 256 / 224)),
             transforms.CenterCrop(img_size),
         ]
-        if args.openi:
-            base = [transforms.Grayscale(num_output_channels=3)] + base
         base += [transforms.ToTensor(), transforms.Normalize(mean, std)]
         return transforms.Compose(base)
 
@@ -156,9 +156,21 @@ def get_data_loaders(args):
         test=True,
     )
 
+    test_dataset = JsonlDataset(
+        data_path=os.path.join(args.data_path, args.Test_dset_name),
+        tokenizer=tokenizer,
+        transforms=val_transform,
+        vocab=vocab,
+        args=args,
+        img_path=img_path,
+        test=True,
+    )
+
     args.train_data_len = len(train_dataset)
 
     collate = functools.partial(collate_fn, args=args)
+
+    _pw = args.n_workers > 0  # persistent_workers requires num_workers > 0
 
     train_loader = DataLoader(
         train_dataset,
@@ -167,6 +179,8 @@ def get_data_loaders(args):
         num_workers=args.n_workers,
         pin_memory=True,
         collate_fn=collate,
+        persistent_workers=_pw,
+        prefetch_factor=2 if _pw else None,
     )
     val_loader = DataLoader(
         val_dataset,
@@ -175,6 +189,18 @@ def get_data_loaders(args):
         num_workers=args.n_workers,
         pin_memory=True,
         collate_fn=collate,
+        persistent_workers=_pw,
+        prefetch_factor=2 if _pw else None,
+    )
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=args.batch_sz,
+        shuffle=False,
+        num_workers=args.n_workers,
+        pin_memory=True,
+        collate_fn=collate,
+        persistent_workers=_pw,
+        prefetch_factor=2 if _pw else None,
     )
 
-    return train_loader, val_loader
+    return train_loader, val_loader, test_loader

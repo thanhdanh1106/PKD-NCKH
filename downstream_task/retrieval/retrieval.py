@@ -81,10 +81,7 @@ class CXR_Retrieval_Dataset(Dataset):
 
     def __getitem__(self, idx):
         if self.is_train:
-            if args.MIMIC_dset:
-                study_id, split, label, txt, img = self.data[idx].keys()
-            else:
-                study_id, label, txt, img = self.data[idx].keys()
+            study_id, label, txt, img = self.data[idx].keys()
 
             d_label = self.data[idx][label]
             d_txt = self.data[idx][txt]
@@ -111,10 +108,7 @@ class CXR_Retrieval_Dataset(Dataset):
             return idx, example
 
         else:
-            if args.MIMIC_dset:
-                study_id, split, label, is_aligned, r_id, txt, img = self.data[idx].keys()
-            else:
-                study_id, label, is_aligned, r_id, txt, img = self.data[idx].keys()
+            study_id, label, is_aligned, r_id, txt, img = self.data[idx].keys()
             txt = self.data[idx][txt]
             img = self.data[idx][img]
             label = self.data[idx][is_aligned]  # 1(Aligned), 0(Not aligned)
@@ -132,21 +126,20 @@ class CXR_Retrieval_Dataset(Dataset):
         return label, txt, img
 
     def data_processing(self, origin_txt, img_path):
-        change_path = img_path.split('/')
-        fixed_path = change_path[:-2]
-        fixed_path = "/".join(fixed_path)
-        static_path = change_path[-2:]
-        static_path = "/".join(static_path)
+        # Resolve image path:
+        #   1. Try relative to data_dir (handles ../dataset/... style paths in label files)
+        #   2. Fallback to repo root (handles data/dataset/... style paths in Train/Valid/Test)
+        candidate = os.path.normpath(os.path.join(self.data_dir, img_path))
+        if not os.path.exists(candidate):
+            _repo_root = os.path.normpath(
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
+            )
+            candidate = os.path.normpath(os.path.join(_repo_root, img_path))
 
-        if fixed_path == '/home/mimic-cxr/dataset/image_preprocessing/re_512_3ch':
-            fixed_path = '/home/data_storage/mimic-cxr/dataset/image_preprocessing/re_512_3ch/'
-            img_path = fixed_path + static_path
-            
-        
         if self.args.img_channel == 3:
-            image = Image.open(os.path.join(self.data_dir, img_path))
+            image = Image.open(candidate)
         elif self.args.img_channel == 1:
-            image = Image.open(os.path.join(self.data_dir, img_path))
+            image = Image.open(candidate)
             image = transforms.Grayscale(num_output_channels=3)(image)
 
         image = self.transforms(image)
@@ -375,8 +368,24 @@ def train(args, train_dataset, val_dataset, model, tokenizer, dset):
             model.save_pretrained(save_path_per_ep)
             print(f'Single_EP: {epoch} Model saved on {save_path_per_ep}')
 
-        # Evaluate during training
-        if args.eval_during_training:  # and epoch > 4:
+        # -- Per-epoch valid eval + best model tracking --
+        ep_result, ep_label, ep_losses, ep_idx = test(args, model, val_dataset)
+        ep_eval, _, ep_mrr, ep_rp, _ = evaluate(args, ep_result, ep_label, ep_idx)
+        if args.i2t:
+            ep_r1 = ep_eval['i2t_retrieval']['R@1']
+        else:
+            ep_r1 = ep_eval['t2i_retrieval']['R@1']
+        print(f'[Epoch {epoch}] Valid R@1={ep_r1:.4f}, MRR={ep_mrr:.4f}')
+        if ep_r1 > best_score:
+            best_score = ep_r1
+            best_model_path = os.path.join(args.output_path, 'best_model')
+            os.makedirs(best_model_path, exist_ok=True)
+            _m = model.module if args.n_gpu > 1 else model
+            _m.save_pretrained(best_model_path)
+            print(f'  --> Best model updated (R@1={best_score:.4f}) saved to {best_model_path}')
+
+        # Evaluate during training (detailed)
+        if args.eval_during_training:
             test_result, test_label, test_losses, idx_lst = test(args, model, val_dataset)
             eval_result, Aligned_lst, mrr_score, recall_precision_results, pvalue_results = evaluate(args, test_result, test_label, idx_lst)
 
@@ -487,11 +496,42 @@ def main(args):
 
         train(args, train_dataloader, eval_dataloader, model, tokenizer, val_dataset)
 
+        # --- Post-training Valid Evaluation ---
+        print("\n=== Valid Split Evaluation (post-training) ===")
+        val_result, val_label, val_losses, val_idx_lst = test(args, model, eval_dataloader)
+        val_eval, val_aligned, val_mrr, val_rp, val_pv = evaluate(args, val_result, val_label, val_idx_lst)
+        if args.i2t:
+            val_accs = val_eval['i2t_retrieval']
+            val_prec = val_rp['i2t_precision']
+            val_rec  = val_rp['i2t_recall']
+        elif args.t2i:
+            val_accs = val_eval['t2i_retrieval']
+            val_prec = val_rp['t2i_precision']
+            val_rec  = val_rp['t2i_recall']
+        print(f'[Valid] MRR:{val_mrr:.4f}  '
+              f'Hit@1:{val_accs["R@1"]:.4f}, Hit@5:{val_accs["R@5"]:.4f}, Hit@10:{val_accs["R@10"]:.4f}')
+        print(f'[Valid] Recall@1:{val_rec["R@1"]:.4f}, @5:{val_rec["R@5"]:.4f}, @10:{val_rec["R@10"]:.4f}')
+        print(f'[Valid] Precision@1:{val_prec["R@1"]:.4f}, @5:{val_prec["R@5"]:.4f}, @10:{val_prec["R@10"]:.4f}')
+        print(f'[Valid] p-value(MRR):{val_pv["p_mrr"]:.4f}, p-value(H@5):{val_pv["p_h5"]:.4f}')
+
     if args.do_test:
         print("Load Test dataset", args.label_conditioned_test_dataset)
         test_dataset = CXR_Retrieval_Dataset(args.label_conditioned_test_dataset, tokenizer, transforms, args, is_train=False)
         eval_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=True)
         best_score = 0
+
+        # Load best checkpoint if available (saved during training)
+        best_ckpt = os.path.join(args.output_path, 'best_model', 'pytorch_model.bin')
+        if os.path.exists(best_ckpt):
+            print(f'Loading best checkpoint from {best_ckpt}')
+            _m = model.module if args.n_gpu > 1 else model
+            _m.load_state_dict(torch.load(best_ckpt, map_location=args.device))
+        elif args.load_pretrained_model and os.path.isfile(args.load_pretrained_model):
+            print(f'Loading pretrained model from {args.load_pretrained_model}')
+            _m = model.module if args.n_gpu > 1 else model
+            _m.load_state_dict(torch.load(args.load_pretrained_model, map_location=args.device), strict=False)
+        else:
+            print('[Warning] No best checkpoint found, using current model weights for test.')
 
         test_result, test_label, test_losses, idx_lst = test(args, model, eval_dataloader)
         eval_result, Aligned_lst, mrr_score, recall_precision_results, pvalue_results = evaluate(args, test_result, test_label, idx_lst)
@@ -558,43 +598,30 @@ if __name__ == '__main__':
     # TODO: for Retrieval
     parser.add_argument("--t2i", type=str2bool, default=True, help="Text-to-Image Retrieval")
     parser.add_argument("--i2t", type=str2bool, default=False, help="Image-to-Text Retrieval")
-    # TODO: !!!!!!!!!!! MIMIC(val, test) or OPENI(val, test)
-    parser.add_argument("--eval_len_size", type=int, default=354, choices=[759, 1536, 710, 354],
-                        help="example size per idx_matching_example")  # 759
+    # TODO: !!!!!!!!!!! OPENI(val, test)
+    parser.add_argument("--eval_len_size", type=int, default=354,
+                        help="example size per idx_matching_example")
     parser.add_argument("--do_train", type=str2bool, default=True, help="Train & Evaluate")
-    parser.add_argument("--do_test", type=str2bool, default=False, help="Test")
+    parser.add_argument("--do_test", type=str2bool, default=True, help="Test after training")
 
-    # eval_during_training
-    # must be deleted! after validation dataset
-    # TODO: only MIMIC, PAR, set to True if not set to False
+    # eval_during_training (disabled by default for OpenI)
     parser.add_argument("--eval_during_training", type=str2bool, default=False, help="eval_druing_training")
-    # TODO: label_conditioned or just study_id matching !
-    # TODO: Choose dataset, mimic or openI
-    parser.add_argument("--MIMIC_dset", type=str2bool, default=True,
-                        help="using mimic-cxr dataset(T), using openi dataset (F)")
-
-    # TODO: trainset, mimic or openi
+    # OpenI dataset
     parser.add_argument("--train_dataset", type=str,
-                        default='../../data/mimic/Train.jsonl',
-                        choices=['../../data/mimic/Train.jsonl',
-                                 '../../data/openi/Train.jsonl'],
+                        default='../../data/dataset/openi/Train.jsonl',
                         help="train dataset for training")
 
     parser.add_argument("--label_conditioned_valid_dataset", type=str,
-                        default='../../data/mimic/Train.jsonl',
+                        default='../../data/dataset/openi/T2I_Label_Test.jsonl',
                         help='label conditioned valid dataset for evaluating train set',
-                        choices=['../../data/mimic/T2I_Label_Valid.jsonl',
-                                 '../../data/I2T_Label_Valid.jsonl',
-                                 '../../data/openi/T2I_Label_Valid.jsonl',
-                                 '../../data/openi/I2T_Label_Valid.jsonl'])
+                        choices=['../../data/dataset/openi/T2I_Label_Test.jsonl',
+                                 '../../data/dataset/openi/I2T_Label_Test.jsonl'])
 
     parser.add_argument("--label_conditioned_test_dataset", type=str,
-                        default='../../data/mimic/T2I_Label_Test.jsonl',
+                        default='../../data/dataset/openi/T2I_Label_Test.jsonl',
                         help='label conditioned test dataset for evaluating the model',
-                        choices=['../../data/mimic/T2I_Label_Test.jsonl',
-                                 '../../data/mimic/I2T_Label_Test.jsonl',
-                                 '../../data/openi/T2I_Label_Test.jsonl',
-                                 '../../data/openi/I2T_Label_Test.jsonl'])
+                        choices=['../../data/dataset/openi/T2I_Label_Test.jsonl',
+                                 '../../data/dataset/openi/I2T_Label_Test.jsonl'])
 
     output_path = 'output/' + str(datetime.now())
     if not os.path.exists(output_path):
@@ -632,8 +659,8 @@ if __name__ == '__main__':
     parser.add_argument("--img_hidden_sz", type=int, default=2048)
     parser.add_argument("--img_encoder", type=str, default='full-fiber', choices=['random-pixel', 'full-fiber', 'ViT'])
     
-    # TODO: MIMIC OR OPENI, 3 or 1 channel
-    parser.add_argument("--img_channel", type=int, default=1, choices=[1, 3])
+    # OpenI 512_3ch images → channel=3
+    parser.add_argument("--img_channel", type=int, default=3, choices=[1, 3])
     parser.add_argument("--num_image_embeds", type=int, default=256, choices=[36, 49, 256])
     parser.add_argument("--img_size", type=int, default=512)  # TODO: change helper.py, resize(224)
     parser.add_argument("--img_embed_pool_type", type=str, default="max", choices=["max", "avg"])

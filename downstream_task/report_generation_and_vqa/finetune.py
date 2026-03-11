@@ -61,7 +61,7 @@ def setup_for_distributed(is_master):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--generation_dataset", default='mimic-cxr', type=str, help=["mimic-cxr, openi"])
+    parser.add_argument("--generation_dataset", default='openi', type=str, help="openi")
     parser.add_argument("--vqa_rad", default="all", type=str, choices=["all", "chest", "head", "abd"])
     parser.add_argument("--data_set", default="train", type=str, help="train | valid")
     parser.add_argument('--img_hidden_sz', type=int, default=2048, help="Whether to use amp for fp16")
@@ -95,7 +95,7 @@ def main():
     parser.add_argument("--model_recover_path", default=None, type=str,
                         help="The file of fine-tuned pretraining model. ex)'./pretrained_model/pytorch_model.bin'") # model load
     parser.add_argument("--output_dir",
-                        default='/home/edlab/jhmoon/mimic_mv_real/mimic-cxr/downstream_model/',
+                        default='output/report_gen/',
                         type=str,
                         help="The output directory where the model predictions and checkpoints will be written.")
 
@@ -164,7 +164,7 @@ def main():
     parser.add_argument('--max_position_embeddings', type=int, default=None,
                         help="max position embeddings")
 
-    parser.add_argument('--image_root', type=str, default='../../data/mimic/re_512_3ch/Train')
+    parser.add_argument('--image_root', type=str, default='data/dataset/open_i/512_3ch')
     parser.add_argument('--split', type=str, nargs='+', default=['train', 'valid'])
 
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
@@ -195,8 +195,9 @@ def main():
         args.config_path = args.model_recover_path.split('/')[:-1]
         args.config_path = ('/').join(args.config_path)+'/config.json'    
     else:
-        args.config_path = '/home/edlab/jhmoon/mimic_mv_real/mimic-cxr/pre-train/base_PAR_36,128/pytorch_model.bin'.split('/')[:-1]
-        args.config_path = ('/').join(args.config_path)+'/config.json'    
+        # Fallback: use pre-trained config from saved_models/1/
+        args.config_path = 'saved_models/1/config.json'
+
 
     if args.tasks=='vqa':
         args.src_file = '/home/data_storage/mimic-cxr/dataset/data_RAD'
@@ -204,12 +205,9 @@ def main():
         args.train_dataset = '/home/data_storage/mimic-cxr/dataset/data_RAD/trainet.json'
         args.file_valid_jpgs = 'data/vqa_rad/vqa_rad_original_set.json'  
     else:
-        if args.generation_dataset == 'mimic-cxr':
-            args.src_file = 'data/mimic/Train.jsonl'
-            args.file_valid_jpgs = 'data/mimic/Valid.jsonl'
-        else:
-            args.src_file = 'data/openi/Train.jsonl'
-            args.file_valid_jpgs = 'data/openi/Valid.jsonl'
+        args.src_file = 'data/dataset/openi/Train.jsonl'
+        args.file_valid_jpgs = 'data/dataset/openi/Valid.jsonl'
+        args.file_test_jpgs  = 'data/dataset/openi/Test.jsonl'
 
     print(" # PID :", os.getpid())
     os.makedirs(args.output_dir, exist_ok=True)
@@ -244,7 +242,7 @@ def main():
     utils.set_seed(123)
 
     if args.wandb and utils.is_main_process():
-        wandb.init(config=args, project='report_gen', entity='mimic-cxr',  name = args.exp_name, reinit=True)
+        wandb.init(config=args, project='report_gen', entity='openi',  name = args.exp_name, reinit=True)
 
     tokenizer = BertTokenizer.from_pretrained(args.bert_model, do_lower_case=True)
 
@@ -265,7 +263,9 @@ def main():
 
     train_dataset = data_loader.Img2txtDataset(args, args.data_set,
         args.src_file, args.image_root,args.split, args.train_batch_size,
-        tokenizer, args.max_seq_length, file_valid_jpgs=args.file_valid_jpgs,
+        tokenizer, args.max_seq_length,
+        file_valid_jpgs=args.file_valid_jpgs,
+        file_test_jpgs=getattr(args, 'file_test_jpgs', args.file_valid_jpgs),
         bi_uni_pipeline=bi_uni_pipeline, use_num_imgs=args.use_num_imgs,
         s2s_prob=args.s2s_prob, # this must be set to 1.
         bi_prob=args.bi_prob, tasks=args.tasks)

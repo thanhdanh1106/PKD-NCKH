@@ -75,8 +75,14 @@ class JsonlDataset(Dataset):
 
         image = None
         if self.data[index]["img"]:
-            image = Image.open(
-                os.path.join(self.data_dir, self.data[index]["img"]))
+            img_rel = self.data[index]["img"]
+            # img_rel là relative path từ repo root (e.g. data/dataset/open_i/512_3ch/1.jpg)
+            # Thử trực tiếp từ CWD trước, fallback về data_dir nếu không tìm thấy
+            if os.path.exists(img_rel):
+                img_full_path = img_rel
+            else:
+                img_full_path = os.path.join(self.data_dir, img_rel)
+            image = Image.open(img_full_path)
         else:
             image = Image.fromarray(128 * np.ones((256, 256, 3), dtype=np.uint8))
         image = self.transforms(image)

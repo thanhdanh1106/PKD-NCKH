@@ -189,7 +189,7 @@ def _load_dataset(args, dataroot, name, img_id2val, label2ans):
 
 class Img2txtDataset(torch.utils.data.Dataset):
     """ Load image-sentence pairs """
-    def __init__(self, args, data_set, file_src, image_root, split, batch_size, tokenizer, max_len, file_valid_jpgs, use_num_imgs=-1, short_sampling_prob=0.1, sent_reverse_order=False, bi_uni_pipeline=[], s2s_prob=0, bi_prob=1, tasks='report_generation'):
+    def __init__(self, args, data_set, file_src, image_root, split, batch_size, tokenizer, max_len, file_valid_jpgs, file_test_jpgs=None, use_num_imgs=-1, short_sampling_prob=0.1, sent_reverse_order=False, bi_uni_pipeline=[], s2s_prob=0, bi_prob=1, tasks='report_generation'):
         super().__init__()
         self.data_set = data_set
         self.tokenizer = tokenizer  # tokenize function
@@ -216,7 +216,11 @@ class Img2txtDataset(torch.utils.data.Dataset):
             if self.data_set == 'valid':
                 img_dat = [json.loads(l) for l in open(file_valid_jpgs)]
                 print('Loading {0} valid JPG IDs!'.format(len(img_dat)))
-            else: 
+            elif self.data_set == 'test':
+                _test_file = file_test_jpgs if file_test_jpgs else file_valid_jpgs
+                img_dat = [json.loads(l) for l in open(_test_file)]
+                print('Loading {0} test JPG IDs!'.format(len(img_dat)))
+            else:
                 img_dat = [json.loads(l) for l in open(file_src)]
                 print('Loading {0} train JPG IDs!'.format(len(img_dat))) 
 
@@ -411,27 +415,13 @@ class Preprocess4Seq2seq(Pipeline):
         # static_path = change_path[-1:]
         # static_path = "/".join(static_path)
 
-        # # Hard coded part to fix the path.
-        # if self.args.s2s_prob == 1: # report generation. 
-        #     change_path = img_path.split('/')
-        #     fixed_path = change_path[:-2]
-        #     fixed_path = "/".join(fixed_path)
-        #     static_path = change_path[-2:]
-        #     static_path = "/".join(static_path)            
-        #     if fixed_path == '/home/mimic-cxr/dataset/image_preprocessing/re_512_3ch':
-        #         fixed_path = '/home/data_storage/mimic-cxr/dataset/image_preprocessing/re_512_3ch/'
-        #         img_path = fixed_path + static_path
-        # else:
-        #     change_path = img_path.split('/')
-        #     fixed_path = change_path[:-1]
-        #     fixed_path = "/".join(fixed_path)
-        #     static_path = change_path[-1:]
-        #     static_path = "/".join(static_path)
-        #     if fixed_path == '/home/mimic-cxr/dataset/vqa_image/vqa_512_3ch':
-        #         fixed_path = '/home/data_storage/mimic-cxr/dataset/data_RAD/images/'
-        #         img_path = fixed_path + static_path
-
         # loading images
+        # Resolve img_path: try as-is first, then relative to repo root
+        if not os.path.isabs(img_path) and not os.path.exists(img_path):
+            _repo_root = os.path.normpath(
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
+            )
+            img_path = os.path.join(_repo_root, img_path)
         img = Image.open(img_path)
         img = self.gray_scale_3ch(img)
         if  self.len_vis_input < 100:
@@ -539,6 +529,12 @@ class Preprocess4Seq2seqDecoder(Pipeline):
         input_mask[second_st:second_end, second_st:second_end].copy_(
             self._tril_matrix[:second_end-second_st, :second_end-second_st])
 
+        # Resolve img_path: try as-is first, then relative to repo root
+        if not os.path.isabs(img_path) and not os.path.exists(img_path):
+            _repo_root = os.path.normpath(
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
+            )
+            img_path = os.path.join(_repo_root, img_path)
         img = Image.open(img_path)
         img = self.gray_scale_3ch(img)
         img = self.ToTensor(img)

@@ -105,15 +105,18 @@ class CXRDataset(Dataset):
                 origin_txt = random.choice(text)
             is_aligned = 1
 
-        # Resolve image path: lấy tên file từ JSONL path, tìm trong img_dir
+        # Resolve image path:
+        #   1. img_dir set  → img_dir/filename (legacy data/dataset/ layout)
+        #   2. absolute path → dùng trực tiếp
+        #   3. còn lại       → img_path đã là relative từ repo root (data/openi, data/mimic layout)
         img_filename = os.path.basename(img_path)  # e.g. "3437.jpg"
-        img_dir = self.config.get('img_dir', None)
+        img_dir = self.config.get('img_dir', None) or ''
         if img_dir:
             full_img_path = os.path.join(img_dir, img_filename)
-        elif not os.path.isabs(img_path):
-            full_img_path = os.path.join(self.data_dir, img_path)
-        else:
+        elif os.path.isabs(img_path):
             full_img_path = img_path
+        else:
+            full_img_path = img_path  # relative từ CWD (repo root)
         image = Image.open(full_img_path).convert("RGB")
         image = self.transform(image)  # Dùng transform đã khởi tạo sẵn (train/val)
         
