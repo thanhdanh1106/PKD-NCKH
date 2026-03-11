@@ -544,24 +544,33 @@ def main(args):
               f'Precision@1:{P1}, Precision@5:{P5}, Precision@10:{P10}')
         print(f'  p-value(MRR):{pvalue_results["p_mrr"]:.4f}, p-value(H@5):{pvalue_results["p_h5"]:.4f}')
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('true', '1', 'yes'):
+        return True
+    elif v.lower() in ('false', '0', 'no'):
+        return False
+    raise argparse.ArgumentTypeError('Boolean value expected (true/false).')
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # TODO: for Retrieval
-    parser.add_argument("--t2i", type=bool, default=True, help="Text-to-Image Retrieval")
-    parser.add_argument("--i2t", type=bool, default=False, help="Image-to-Text Retrieval")
+    parser.add_argument("--t2i", type=str2bool, default=True, help="Text-to-Image Retrieval")
+    parser.add_argument("--i2t", type=str2bool, default=False, help="Image-to-Text Retrieval")
     # TODO: !!!!!!!!!!! MIMIC(val, test) or OPENI(val, test)
     parser.add_argument("--eval_len_size", type=int, default=354, choices=[759, 1536, 710, 354],
                         help="example size per idx_matching_example")  # 759
-    parser.add_argument("--do_train", type=bool, default=True, help="Train & Evaluate")
-    parser.add_argument("--do_test", type=bool, default=False, help="Test")
+    parser.add_argument("--do_train", type=str2bool, default=True, help="Train & Evaluate")
+    parser.add_argument("--do_test", type=str2bool, default=False, help="Test")
 
     # eval_during_training
     # must be deleted! after validation dataset
     # TODO: only MIMIC, PAR, set to True if not set to False
-    parser.add_argument("--eval_during_training", type=bool, default=False, help="eval_druing_training")
+    parser.add_argument("--eval_during_training", type=str2bool, default=False, help="eval_druing_training")
     # TODO: label_conditioned or just study_id matching !
     # TODO: Choose dataset, mimic or openI
-    parser.add_argument("--MIMIC_dset", type=bool, default=True,
+    parser.add_argument("--MIMIC_dset", type=str2bool, default=True,
                         help="using mimic-cxr dataset(T), using openi dataset (F)")
 
     # TODO: trainset, mimic or openi
@@ -593,7 +602,7 @@ if __name__ == '__main__':
         os.chmod(output_path, 0o777)
         
     parser.add_argument("--output_path", type=str, default=output_path, help="ex)path/to/save/model")
-    parser.add_argument("--with_cuda", type=bool, default=True, help="training with CUDA: True or False")
+    parser.add_argument("--with_cuda", type=str2bool, default=True, help="training with CUDA: True or False")
     parser.add_argument("--cuda_devices", type=int, nargs='+', default=None, help="CUDA device ids")
     parser.add_argument("--epochs", type=int, default=10, help='number of epochs')
     parser.add_argument("--batch_size", type=int, default=10, help="number of batch size")
@@ -606,7 +615,7 @@ if __name__ == '__main__':
     # When args.CXRBERT: TRUE
     # Load pre-trained model -> weight_load(T), load_pretrained_model: change path, bert_model: set to same size model
     # From scratch -> weight_load(F), bert_model: set to bert-base-scratch(in cxrbert_origin.py, CXRBertEncoder)
-    parser.add_argument("--weight_load", type=bool, default=False, help='load_pretrained_model(T), scratch(F)')
+    parser.add_argument("--weight_load", type=str2bool, default=False, help='load_pretrained_model(T), scratch(F)')
 
     # do_train -> load_pretrained_model: Pre-trained CXR-BERT
     # do_test -> load_pretrained_model: saved CXRBertForRetrieval model path

@@ -127,7 +127,11 @@ def main():
     parser.add_argument('--split', type=str, default='valid')
     parser.add_argument('--drop_prob', default=0.1, type=float)
     parser.add_argument('--file_valid_jpgs', default='', type=str)
-
+    parser.add_argument('--src_file', default=None, type=str,
+                        help='Override path to test .jsonl file (e.g. data/mimic/Test.jsonl)')
+    parser.add_argument('--image_root', default=None, type=str,
+                        help='Root directory of images on this machine; replaces the original '
+                             'server prefix in each img path stored in the jsonl file.')
 
     args = parser.parse_args()
     # os.environ['CUDA_VISIBLE_DEVICES'] = args.cuda  # setting gpu number
@@ -211,7 +215,9 @@ def main():
             torch.cuda.empty_cache()
 
             eval_lst = []
-            if 'openi' in re.split(r'[ _/]', args.model_recover_path):
+            if args.src_file:
+                print(f"Using provided src_file: {args.src_file}")
+            elif 'openi' in re.split(r'[ _/]', args.model_recover_path):
                 args.src_file = '/home/jhmoon/MedViLL/data/openi/Test.jsonl'
                 print("OpenI data load")
             elif 'mimic' in re.split(r'[ _/]', args.model_recover_path):
@@ -231,8 +237,10 @@ def main():
                 fixed_path = change_path[:-2]
                 fixed_path = "/".join(fixed_path)
                 static_path = change_path[-2:]
-                static_path = "/".join(static_path)            
-                if fixed_path == '/home/mimic-cxr/dataset/image_preprocessing/re_512_3ch':
+                static_path = "/".join(static_path)
+                if args.image_root:
+                    img_path = os.path.join(args.image_root, static_path)
+                elif fixed_path == '/home/mimic-cxr/dataset/image_preprocessing/re_512_3ch':
                     fixed_path = '/home/data_storage/mimic-cxr/dataset/image_preprocessing/re_512_3ch/'
                     img_path = fixed_path + static_path
                 else: img_path=src['img']

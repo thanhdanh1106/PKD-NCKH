@@ -440,6 +440,8 @@ def test(args):
 def cli_main():
     parser = argparse.ArgumentParser(description="Train Models")
     get_args(parser)
+    parser.add_argument("--do_test", action="store_true", default=False,
+                        help="Run test() instead of train()")
     args, remaining_args = parser.parse_known_args()
     
     # Sửa đường dẫn như sau:
@@ -455,7 +457,10 @@ def cli_main():
     print('valid_dset:', os.path.join(args.data_path, args.Valid_dset_name))
     print('========================')
     
-    train(args)
+    if args.do_test:
+        test(args)
+    else:
+        train(args)
 
 if __name__ == "__main__":
     import warnings
