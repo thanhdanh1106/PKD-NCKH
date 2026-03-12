@@ -24,7 +24,7 @@ def get_transforms(args, is_train: bool = True):
     if is_train:
         base = [
             transforms.Grayscale(num_output_channels=3),
-            transforms.RandomAutoContrast(p=0.5),   # X-ray: simulate CLAHE contrast enhancement
+            transforms.RandomAutocontrast(p=0.5),   # X-ray: simulate CLAHE contrast enhancement
             transforms.RandomEqualize(p=0.3),         # histogram equalization for low-contrast lesions
             transforms.RandomResizedCrop(img_size, scale=(0.75, 1.0), ratio=(0.85, 1.15)),
             transforms.RandomHorizontalFlip(p=0.5),
