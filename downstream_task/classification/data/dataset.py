@@ -60,8 +60,14 @@ class JsonlDataset(Dataset):
 
         image = None
         if self.data[index]["img"]:
-            image = Image.open(
-                os.path.join(self.data_dir, self.data[index]["img"]))
+            img_field = self.data[index]["img"]
+            if os.path.isabs(img_field):
+                img_path = img_field
+            elif getattr(self.args, 'img_root_dir', None):
+                img_path = os.path.join(self.args.img_root_dir, img_field)
+            else:
+                img_path = os.path.join(self.data_dir, img_field)
+            image = Image.open(img_path)
         else:
             image = Image.fromarray(128 * np.ones((256, 256, 3), dtype=np.uint8))
         image = self.transforms(image)

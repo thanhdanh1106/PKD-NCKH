@@ -60,6 +60,8 @@ def get_args(parser):
     parser.add_argument("--freeze_img_all", type=str, default=True)
     parser.add_argument("--freeze_txt_all", type=str, default=True)
 
+    parser.add_argument("--img_root_dir", type=str, default=None,
+                        help="Root directory for image paths stored in jsonl (relative to cls.py cwd)")
     parser.add_argument("--glove_path", type=str, default="/path/to/glove_embeds/glove.840B.300d.txt")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
     parser.add_argument("--hidden", nargs="*", type=int, default=[])
