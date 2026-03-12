@@ -361,12 +361,9 @@ def train(args, train_dataset, val_dataset, model, tokenizer, dset):
             os.mkdir(save_path_per_ep)
             os.chmod(save_path_per_ep, 0o777)
 
-        if args.n_gpu > 1:
-            model.module.save_pretrained(save_path_per_ep)
-            print(f'Multi_EP: {epoch} Model saved on {save_path_per_ep}')
-        else:
-            model.save_pretrained(save_path_per_ep)
-            print(f'Single_EP: {epoch} Model saved on {save_path_per_ep}')
+        _m_ep = model.module if args.n_gpu > 1 else model
+        torch.save(_m_ep.state_dict(), os.path.join(save_path_per_ep, 'pytorch_model.bin'))
+        print(f'EP: {epoch} Model saved on {save_path_per_ep}')
 
         # -- Per-epoch valid eval + best model tracking --
         ep_result, ep_label, ep_losses, ep_idx = test(args, model, val_dataset)
@@ -381,7 +378,7 @@ def train(args, train_dataset, val_dataset, model, tokenizer, dset):
             best_model_path = os.path.join(args.output_path, 'best_model')
             os.makedirs(best_model_path, exist_ok=True)
             _m = model.module if args.n_gpu > 1 else model
-            _m.save_pretrained(best_model_path)
+            torch.save(_m.state_dict(), os.path.join(best_model_path, 'pytorch_model.bin'))
             print(f'  --> Best model updated (R@1={best_score:.4f}) saved to {best_model_path}')
 
         # Evaluate during training (detailed)

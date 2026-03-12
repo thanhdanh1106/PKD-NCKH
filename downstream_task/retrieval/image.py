@@ -2,12 +2,13 @@ import torch
 import torchvision
 import torch.nn as nn
 from einops import rearrange
+from torchvision.models import ResNet50_Weights
 
 class ImageEncoder_pool(nn.Module):
     def __init__(self, args):
         super(ImageEncoder_pool, self).__init__()
         self.args = args
-        model = torchvision.models.resnet50(pretrained=True)
+        model = torchvision.models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
         modules = list(model.children())[:-2]
         self.model = nn.Sequential(*modules)
 
@@ -34,7 +35,7 @@ class ImageEncoder_cnn(nn.Module):
     def __init__(self, args):
         super(ImageEncoder_cnn, self).__init__()
         self.args = args
-        model = torchvision.models.resnet50(pretrained=True)
+        model = torchvision.models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
         modules = list(model.children())[:-2]
         self.model = nn.Sequential(*modules)
 
@@ -56,7 +57,7 @@ class ImageEncoder_cnn(nn.Module):
 class fully_use_cnn(nn.Module):
     def __init__(self):
         super(fully_use_cnn, self).__init__()
-        model = torchvision.models.resnet50(pretrained=True)
+        model = torchvision.models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
         modules = list(model.children())[:-2]
         self.model = nn.Sequential(*modules)
         pool_func = (nn.AdaptiveAvgPool2d)
