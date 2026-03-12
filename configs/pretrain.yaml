@@ -11,59 +11,31 @@ valid_dataset: "data/dataset/openi/Valid.jsonl"
 test_dataset: "data/dataset/openi/Test.jsonl"
 img_dir: "" # để trống: dùng img path có sẵn trong jsonl (relative từ repo root)
 
-# --- Training schedule ---
-epochs: 30 # Tăng 20→30: dataset lớn hơn + seq_len dài hơn
-batch_size: 64 # 64 với seq_len=128: VRAM ~10-11GB (an toàn T4)
-num_workers: 4 # 4 workers tối ưu Colab
-gradient_accumulation_steps: 2 # Effective batch = 64×2 = 128 (giữ nguyên độ ổn định)
-pin_memory: true # Faster CPU→GPU transfer
-
-# --- Image config ---
-img_encoder: "ViT"
-img_size: 224
-img_embed_pool_type: "max"
-num_image_embeds: 196 # 14×14 patches từ ViT patch_size=16
+epochs: 50
+num_workers: 4
+img_encoder: random-pixel #full-fiber, ViT
+img_size: 512
+img_embed_pool_type: max
+num_image_embeds: 180 #256
 img_channel: 3
 image_res: 224
 vision_width: 768
-
-# --- Model dimensions ---
 embedding_size: 768
 hidden_size: 768
+batch_size: 32
 temp: 0.07
+lr: 0.00001 #1e-5
+gradient_accumulation_steps: 4
+warmup: 0.1
+warmup_steps: 0
+tokenizer: "bert-base-uncased"
+bert_model: "bert-base-scratch"
+vocab_size: 30522
 
-# --- Optimizer (AdamW) ---
-lr: 5.0e-5 # 5e-5: ổn định hơn 1e-4 với BERT pretrained weights
 beta1: 0.9
-beta2: 0.98 # 0.98 thay 0.999: hội tụ nhanh hơn với transformer
+beta2: 0.999
 eps: 1e-6
 weight_decay: 0.01
 
-# --- LR Scheduler: Cosine Annealing với Linear Warmup ---
-warmup: 0.06 # 6% warmup (chuẩn BERT pre-training)
-warmup_steps: 0 # 0 = tính từ warmup ratio
-min_lr: 1.0e-6 # LR tối thiểu cuối schedule
-
-# --- BERT tokenizer ---
-tokenizer: "bert-base-uncased"
-bert_model: "bert-base-uncased"
-vocab_size: 30522
-
-# --- Sequence ---
-seq_len: 128 # 128 thay 64: capture đủ nội dung report (+30% context)
+seq_len: 253
 max_seq_len: 512
-
-# --- T4 GPU optimizations ---
-fp16: true # AMP FP16 Tensor Cores (~2x speedup, ~50% VRAM)
-gradient_checkpointing: false # false: nhanh hơn; bật nếu OOM
-
-# --- Loss weights ---
-mlm_weight: 1.0 # MLM: tái tạo masked tokens
-itm_weight: 1.0 # ITM: khớp ảnh-text
-label_smoothing: 0.1 # Tránh overfit trên dataset nhỏ
-
-# --- Early stopping ---
-patience: 7 # Tăng 5→7: cho model thêm cơ hội phục hồi
-
-# --- Gradient clipping ---
-max_grad_norm: 1.0 # Ổn định gradient, chuẩn cho transformer

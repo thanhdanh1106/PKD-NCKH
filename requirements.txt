@@ -15,6 +15,7 @@ click==7.1.2
 configparser==5.0.1
 cryptography==2.8
 cycler==0.11.0
+dataclasses==0.7
 decorator==4.4.2
 deprecation==2.1.0
 docker-pycreds==0.4.0
@@ -44,7 +45,7 @@ mkl-fft==1.0.6
 mkl-random==1.0.1
 networkx==2.0
 nltk==3.6.7
-numpy>=1.23.0
+numpy==1.19.3
 oauthlib==3.1.0
 olefile==0.46
 packaging==21.3

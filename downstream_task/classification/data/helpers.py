@@ -1,47 +1,32 @@
 import functools
 import json
 import os
-import torch
 from collections import Counter
+
+import torch
+import torchvision.transforms as transforms
+from pytorch_pretrained_bert import BertTokenizer
 from torch.utils.data import DataLoader
-from torchvision import transforms
-from transformers import BertTokenizer
 
 from data.dataset import JsonlDataset
 from data.vocab import Vocab
 
 
-def get_transforms(args, is_train: bool = True):
-    """
-    Train: RandomResizedCrop + HorizontalFlip + ColorJitter + RandomAffine
-           → tăng tính đa dạng dữ liệu, giảm overfitting
-    Val/Test: Resize + CenterCrop (deterministic)
-    """
-    mean = [0.485, 0.456, 0.406]
-    std  = [0.229, 0.224, 0.225]
-    img_size = getattr(args, 'img_size', 224)
-
-    if is_train:
-        base = [
-            transforms.Grayscale(num_output_channels=3),
-            transforms.RandomAutocontrast(p=0.5),   # X-ray: simulate CLAHE contrast enhancement
-            transforms.RandomEqualize(p=0.3),         # histogram equalization for low-contrast lesions
-            transforms.RandomResizedCrop(img_size, scale=(0.75, 1.0), ratio=(0.85, 1.15)),
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomRotation(degrees=10),
-            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.1, hue=0.0),
-            transforms.RandomAffine(degrees=0, shear=5),
-        ]
-        base += [transforms.ToTensor(), transforms.Normalize(mean, std)]
-        return transforms.Compose(base)
+def get_transforms(args):
+    if args.openi:
+        return transforms.Compose(
+            [
+                transforms.Grayscale(num_output_channels=3),
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            ])
     else:
-        base = [
-            transforms.Grayscale(num_output_channels=3),
-            transforms.Resize(int(img_size * 256 / 224)),
-            transforms.CenterCrop(img_size),
-        ]
-        base += [transforms.ToTensor(), transforms.Normalize(mean, std)]
-        return transforms.Compose(base)
+        return transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            ]
+    )
 
 
 def get_labels_and_frequencies(path):
@@ -73,10 +58,8 @@ def get_vocab(args):
     bert_tokenizer = BertTokenizer.from_pretrained(
         args.bert_model, do_lower_case=True
     )
-    # Newer transformers drop `ids_to_tokens`; rebuild from the vocab mapping
-    vocab_dict = bert_tokenizer.get_vocab()
-    vocab.stoi = vocab_dict
-    vocab.itos = bert_tokenizer.convert_ids_to_tokens(list(range(len(vocab_dict))))
+    vocab.stoi = bert_tokenizer.vocab
+    vocab.itos = bert_tokenizer.ids_to_tokens
     vocab.vocab_sz = len(vocab.itos)
 
     return vocab
@@ -110,102 +93,54 @@ def collate_fn(batch, args):
 
 
 def get_data_loaders(args):
-    train_path = os.path.join(args.data_path, args.Train_dset_name)
+    tokenizer = (
+        BertTokenizer.from_pretrained(args.bert_model, do_lower_case=True).tokenize)
 
-    # ---------- labels ----------
-    all_labels = set()
-    label_freqs = Counter()
-    with open(train_path) as f:
-        for line in f:
-            data = json.loads(line)
-            if data["label"]:
-                labels = (
-                    data["label"].split(', ')
-                    if isinstance(data["label"], str)
-                    else data["label"]
-                )
-                all_labels.update(labels)
-                label_freqs.update(labels)
+    transforms = get_transforms(args)
 
-    args.labels = sorted(list(all_labels))
-    args.n_classes = len(args.labels)
-    args.label_freqs = label_freqs
+    args.labels, args.label_freqs = get_labels_and_frequencies(
+        os.path.join(args.data_path, args.Train_dset_name)
+    )
 
-    tokenizer = BertTokenizer.from_pretrained(args.bert_model)
     vocab = get_vocab(args)
-    args.vocab = vocab  # needed by ImageBertEmbeddings for CLS/SEP token lookup
+    args.vocab = vocab
+    args.vocab_sz = vocab.vocab_sz
+    args.n_classes = len(args.labels)
 
-    # ---------- separate train/val transforms ----------
-    train_transform = get_transforms(args, is_train=True)
-    val_transform   = get_transforms(args, is_train=False)
-
-    img_path = os.path.join(args.data_path, "images")
-
-    train_dataset = JsonlDataset(
-        data_path=os.path.join(args.data_path, args.Train_dset_name),
-        tokenizer=tokenizer,
-        transforms=train_transform,
-        vocab=vocab,
-        args=args,
-        img_path=img_path,
-        test=False,
+    train = JsonlDataset(
+        os.path.join(args.data_path, args.Train_dset_name),
+        tokenizer,
+        transforms,
+        vocab,
+        args,
     )
 
-    val_dataset = JsonlDataset(
-        data_path=os.path.join(args.data_path, args.Valid_dset_name),
-        tokenizer=tokenizer,
-        transforms=val_transform,
-        vocab=vocab,
-        args=args,
-        img_path=img_path,
-        test=True,
-    )
+    args.train_data_len = len(train)
 
-    test_dataset = JsonlDataset(
-        data_path=os.path.join(args.data_path, args.Test_dset_name),
-        tokenizer=tokenizer,
-        transforms=val_transform,
-        vocab=vocab,
-        args=args,
-        img_path=img_path,
-        test=True,
+    dev = JsonlDataset(
+        os.path.join(args.data_path, args.Valid_dset_name),
+        tokenizer,
+        transforms,
+        vocab,
+        args,
     )
-
-    args.train_data_len = len(train_dataset)
 
     collate = functools.partial(collate_fn, args=args)
 
-    _pw = args.n_workers > 0  # persistent_workers requires num_workers > 0
-
     train_loader = DataLoader(
-        train_dataset,
+        train,
         batch_size=args.batch_sz,
         shuffle=True,
         num_workers=args.n_workers,
-        pin_memory=True,
         collate_fn=collate,
-        persistent_workers=_pw,
-        prefetch_factor=2 if _pw else None,
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=args.batch_sz,
-        shuffle=False,
-        num_workers=args.n_workers,
-        pin_memory=True,
-        collate_fn=collate,
-        persistent_workers=_pw,
-        prefetch_factor=2 if _pw else None,
-    )
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=args.batch_sz,
-        shuffle=False,
-        num_workers=args.n_workers,
-        pin_memory=True,
-        collate_fn=collate,
-        persistent_workers=_pw,
-        prefetch_factor=2 if _pw else None,
     )
 
-    return train_loader, val_loader, test_loader
+    val_loader = DataLoader(
+        dev,
+        batch_size=args.batch_sz,
+        shuffle=False,
+        num_workers=args.n_workers,
+        collate_fn=collate,
+    )
+
+    return train_loader, val_loader  # , test
