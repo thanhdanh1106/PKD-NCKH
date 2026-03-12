@@ -41,18 +41,15 @@ class ImageEncoder_cnn(nn.Module):
         self.model = nn.Sequential(*modules)
 
     def forward(self, x):
-        out = self.model(x)  # 512x512: torch.Size([16, 2048, 16, 16])
-        out = torch.flatten(out, start_dim=2).transpose(1, 2).contiguous()
-        
-        vis_pe = torch.arange(out.size(1), dtype=torch.long).cuda()
-        vis_pe = vis_pe.unsqueeze(0).expand(out.size(0), out.size(1))
+        out = self.model(x)              # B x 2048 x H x W
+        B, C, H, W = out.shape
+        out = out.view(B, C, H * W)      # B x 2048 x (H*W)
+        pool = nn.AdaptiveAvgPool1d(self.configs['num_image_embeds'])
+        out = pool(out).transpose(1, 2).contiguous()  # B x num_image_embeds x 2048
 
-        random_sampling = torch.randperm(out.size(1))[:self.configs['num_image_embeds']]
-        random_sampling, _ = torch.sort(random_sampling)
-
-        random_sample = out[:, random_sampling]
-        random_position = vis_pe[:, random_sampling]
-        return random_sample, random_position
+        vis_pe = torch.arange(out.size(1), dtype=torch.long, device=x.device)
+        vis_pe = vis_pe.unsqueeze(0).expand(B, -1)
+        return out, vis_pe
 
 
 class fully_use_cnn(nn.Module):

@@ -10,7 +10,7 @@ import numpy as np
 
 from models.MedViLL_origin import MedViLL
 
-from transformers.optimization import AdamW
+from torch.optim import AdamW
 from transformers import BertConfig, AlbertConfig, AutoConfig
 
 

@@ -29,6 +29,7 @@ class MedViLLEncoder(BertPreTrainedModel):
         super().__init__(model_config)
         self.args = args
         self.configs = configs
+        model_config.attn_implementation = 'eager'
         bert = BertModel(model_config)
 
         self.txt_embeddings = bert.embeddings
@@ -58,8 +59,7 @@ class MedViLLEncoder(BertPreTrainedModel):
             extended_attn_mask = attn_mask.unsqueeze(1)
         else:
             raise NotImplementedError
-        extended_attn_mask = extended_attn_mask.to(dtype=torch.float16)
-        extended_attn_mask = (1.0 - extended_attn_mask) * - 10000.0
+        extended_attn_mask = (1.0 - extended_attn_mask.float()) * -10000.0
         return extended_attn_mask
 
     def forward(self, cls_tok, input_txt, attn_mask, segment, input_img, sep_tok):
@@ -91,8 +91,8 @@ class MedViLLEncoder(BertPreTrainedModel):
             img_embed_out = self.img_embeddings(img, position, img_tok)  # bsz, num_img_embeds, hsz
             txt_embed_out = self.txt_embeddings(input_txt, segment)  # bsz, seq_len, hsz. inputs: bsz, seq_len
             encoder_input = torch.cat([cls_out, img_embed_out, sep_out, txt_embed_out], 1)  # B x (TXT + IMG) x HID
-            encoded_layers = self.encoder(encoder_input, extended_attn_mask, output_hidden_states=False, output_attentions=True)
-            return encoded_layers[0], self.pooler(encoded_layers[0]), encoded_layers[1]
+            encoded_layers = self.encoder(encoder_input, extended_attn_mask, output_hidden_states=False, output_attentions=False)
+            return encoded_layers[0], self.pooler(encoded_layers[0]), None
 
 class MedViLL(BertPreTrainedModel):
     """
