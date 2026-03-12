@@ -73,8 +73,10 @@ def get_vocab(args):
     bert_tokenizer = BertTokenizer.from_pretrained(
         args.bert_model, do_lower_case=True
     )
-    vocab.stoi = bert_tokenizer.vocab
-    vocab.itos = bert_tokenizer.ids_to_tokens
+    # Newer transformers drop `ids_to_tokens`; rebuild from the vocab mapping
+    vocab_dict = bert_tokenizer.get_vocab()
+    vocab.stoi = vocab_dict
+    vocab.itos = bert_tokenizer.convert_ids_to_tokens(list(range(len(vocab_dict))))
     vocab.vocab_sz = len(vocab.itos)
 
     return vocab
