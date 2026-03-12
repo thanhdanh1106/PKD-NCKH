@@ -63,13 +63,12 @@ class JsonlDataset(Dataset):
         )
         if self.args.task_type == "multilabel":
             label = torch.zeros(self.n_classes)
-            if self.data[index]["label"] == '':
-                self.data[index]["label"] = "'Others'"
-            else:
-                pass  
-            label[
-                [self.args.labels.index(tgt) for tgt in self.data[index]["label"].split(', ')]
-            ] = 1
+            raw_label = self.data[index].get("label", "")
+            if raw_label and raw_label.strip():
+                for tgt in raw_label.split(', '):
+                    tgt = tgt.strip()
+                    if tgt in self.args.labels:
+                        label[self.args.labels.index(tgt)] = 1
         else:
             pass
 

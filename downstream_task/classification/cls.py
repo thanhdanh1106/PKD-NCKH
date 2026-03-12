@@ -132,15 +132,19 @@ def get_args(parser):
 def get_criterion(args, device):
     """
     Multilabel: FocalLoss với pos_weight để xử lý class imbalance.
+    pos_weight = sqrt(neg/pos), capped at 10 để tránh model collapse.
     Classification: CrossEntropyLoss với label_smoothing.
     """
     if args.task_type == "multilabel":
         pos_weight = None
         if args.weight_classes and hasattr(args, 'label_freqs') and args.label_freqs:
-            freqs = [args.label_freqs[l] for l in args.labels]
+            freqs = [max(args.label_freqs.get(l, 1), 1) for l in args.labels]
             negative = [max(args.train_data_len - f, 1) for f in freqs]
-            pos_weight = (torch.FloatTensor(negative) / torch.FloatTensor(freqs)).to(device)
-        criterion = FocalLoss(gamma=2.0, pos_weight=pos_weight)
+            # sqrt(neg/pos) is gentler than neg/pos; cap at 10 prevents all-positive collapse
+            raw_weights = [float(n) / float(f) for n, f in zip(negative, freqs)]
+            capped = [min(w ** 0.5, 10.0) for w in raw_weights]
+            pos_weight = torch.FloatTensor(capped).to(device)
+        criterion = FocalLoss(gamma=1.0, pos_weight=pos_weight)
     else:
         criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
     return criterion
