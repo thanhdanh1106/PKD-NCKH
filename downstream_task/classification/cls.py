@@ -155,8 +155,10 @@ def model_eval(data, model, args, criterion, device, store_preds=False):
         metrics["macro_roc_auc"] = roc_auc_score(tgts, preds, average="macro")
         metrics["macro_f1"] = f1_score(tgts, preds_bool, average="macro")
         metrics["micro_f1"] = f1_score(tgts, preds_bool, average="micro")
-        print('micro_auc:', metrics["micro_roc_auc"])
-        print('micro_f1:', metrics["micro_f1"])
+        print('avg_auroc (macro):', round(metrics["macro_roc_auc"], 4))
+        print('avg_f1   (macro):', round(metrics["macro_f1"], 4))
+        print('micro_auc:', round(metrics["micro_roc_auc"], 4))
+        print('micro_f1:', round(metrics["micro_f1"], 4))
         print('-----------------------------------------------------')
     else:
         tgts = [l for sl in tgts for l in sl]
