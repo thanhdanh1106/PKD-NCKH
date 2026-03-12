@@ -114,6 +114,7 @@ def get_data_loaders(args):
 
     # ---------- labels ----------
     all_labels = set()
+    label_freqs = Counter()
     with open(train_path) as f:
         for line in f:
             data = json.loads(line)
@@ -124,9 +125,11 @@ def get_data_loaders(args):
                     else data["label"]
                 )
                 all_labels.update(labels)
+                label_freqs.update(labels)
 
     args.labels = sorted(list(all_labels))
     args.n_classes = len(args.labels)
+    args.label_freqs = label_freqs
 
     tokenizer = BertTokenizer.from_pretrained(args.bert_model)
     vocab = get_vocab(args)

@@ -50,7 +50,7 @@ class JsonlDataset(Dataset):
     def __getitem__(self, index):
         sentence = (
             self.text_start_token
-            + self.tokenizer(self.data[index]["text"])[
+            + self.tokenizer.tokenize(self.data[index]["text"])[
                 : (self.max_seq_len - 1)
             ] + self.text_start_token
         )
