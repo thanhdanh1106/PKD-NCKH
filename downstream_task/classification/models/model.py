@@ -8,10 +8,33 @@ class ImageBertEmbeddings(nn.Module):
         super(ImageBertEmbeddings, self).__init__()
         self.args = args
         self.img_embeddings = nn.Linear(args.img_hidden_sz, args.hidden_sz)
-        self.position_embeddings = embeddings.position_embeddings
-        self.token_type_embeddings = embeddings.token_type_embeddings
-        self.word_embeddings = embeddings.word_embeddings
-        self.LayerNorm = embeddings.LayerNorm
+
+        # CRITICAL: independent copies, NOT shared references.
+        # Sharing the same nn.Parameter means image-path gradients corrupt
+        # the pretrained BERT text embeddings every step → AUROC collapses to ~0.5.
+        self.position_embeddings = nn.Embedding(
+            embeddings.position_embeddings.num_embeddings,
+            embeddings.position_embeddings.embedding_dim,
+        )
+        self.position_embeddings.weight.data.copy_(
+            embeddings.position_embeddings.weight.data)
+
+        self.token_type_embeddings = nn.Embedding(
+            embeddings.token_type_embeddings.num_embeddings,
+            embeddings.token_type_embeddings.embedding_dim,
+        )
+        self.token_type_embeddings.weight.data.copy_(
+            embeddings.token_type_embeddings.weight.data)
+
+        self.word_embeddings = embeddings.word_embeddings  # read-only (CLS/SEP lookup)
+
+        self.LayerNorm = nn.LayerNorm(
+            embeddings.LayerNorm.normalized_shape,
+            eps=embeddings.LayerNorm.eps,
+        )
+        self.LayerNorm.weight.data.copy_(embeddings.LayerNorm.weight.data)
+        self.LayerNorm.bias.data.copy_(embeddings.LayerNorm.bias.data)
+
         self.dropout = nn.Dropout(p=args.dropout)
 
     def forward(self, input_imgs, token_type_ids):

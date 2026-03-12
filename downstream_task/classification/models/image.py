@@ -12,12 +12,11 @@ class ImageEncoder(nn.Module):
     def __init__(self, args):
         super(ImageEncoder, self).__init__()
         self.args = args
-        # DenseNet121: CheXNet backbone, standard for chest X-ray classification
-        # Dense connections reduce feature redundancy → better pathology detection
-        # 7M params (vs ResNet50 25M), feature dim 1024 (vs 2048)
-        weights = torchvision.models.DenseNet121_Weights.IMAGENET1K_V1
-        model = torchvision.models.densenet121(weights=weights)
-        self.model = model.features          # output: (B, 1024, H, W) before ReLU
+        # ResNet50: matches MedViLL pretrain architecture (img_hidden_sz=2048)
+        # Required for pretrained weights to load correctly from saved_models/
+        model = torchvision.models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
+        modules = list(model.children())[:-2]   # remove avgpool + fc
+        self.model = nn.Sequential(*modules)    # output: (B, 2048, H, W)
         # num_image_embeds must be a perfect square (e.g. 49=7x7 for 224px input)
         s = round(args.num_image_embeds ** 0.5)
         assert s * s == args.num_image_embeds, (
@@ -27,8 +26,8 @@ class ImageEncoder(nn.Module):
         self.pool = nn.AdaptiveAvgPool2d((s, s))
 
     def forward(self, x):
-        # B x 3 x H x W → B x 1024 x H' x W' → B x num_image_embeds x 1024
-        out = F.relu(self.model(x), inplace=True)  # activate after DenseNet norm5
+        # B x 3 x H x W → B x 2048 x H' x W' → B x num_image_embeds x 2048
+        out = self.model(x)
         out = self.pool(out)
         out = torch.flatten(out, start_dim=2)
         return out.transpose(1, 2).contiguous()

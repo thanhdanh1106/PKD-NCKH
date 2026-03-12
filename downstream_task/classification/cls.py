@@ -101,7 +101,7 @@ def get_args(parser):
     parser.add_argument("--hidden", nargs="*", type=int, default=[])
 
     parser.add_argument("--img_embed_pool_type", type=str, default="avg", choices=["max", "avg"])
-    parser.add_argument("--img_hidden_sz", type=int, default=1024)
+    parser.add_argument("--img_hidden_sz", type=int, default=2048)
     parser.add_argument("--include_bn", type=bool, default=True)
 
     parser.add_argument("--lr", type=float, default=2e-4)    # head LR; backbone lấy 0.1x = 2e-5
