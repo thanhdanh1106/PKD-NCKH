@@ -13,23 +13,18 @@ class ImageEncoder(nn.Module):
         super(ImageEncoder, self).__init__()
         self.args = args
         # ResNet50: matches MedViLL pretrain architecture (img_hidden_sz=2048)
-        # Required for pretrained weights to load correctly from saved_models/
         model = torchvision.models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
         modules = list(model.children())[:-2]   # remove avgpool + fc
         self.model = nn.Sequential(*modules)    # output: (B, 2048, H, W)
-        # num_image_embeds must be a perfect square (e.g. 49=7x7 for 224px input)
-        s = round(args.num_image_embeds ** 0.5)
-        assert s * s == args.num_image_embeds, (
-            f"num_image_embeds={args.num_image_embeds} must be a perfect square "
-            f"(e.g. 49 for img_size=224)"
-        )
-        self.pool = nn.AdaptiveAvgPool2d((s, s))
+        # Use 1D adaptive pooling so num_image_embeds can be any integer (e.g. 180)
+        self.pool = nn.AdaptiveAvgPool1d(args.num_image_embeds)
 
     def forward(self, x):
-        # B x 3 x H x W → B x 2048 x H' x W' → B x num_image_embeds x 2048
+        # B x 3 x H x W → B x 2048 x (H*W) → B x 2048 x num_image_embeds → B x num_image_embeds x 2048
         out = self.model(x)
+        B, C, H, W = out.shape
+        out = out.view(B, C, H * W)
         out = self.pool(out)
-        out = torch.flatten(out, start_dim=2)
         return out.transpose(1, 2).contiguous()
 
 
