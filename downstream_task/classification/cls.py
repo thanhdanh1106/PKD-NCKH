@@ -145,14 +145,14 @@ def model_eval(data, model, args, criterion, device, store_preds=False):
             try:
                 outAUROC.append(roc_auc_score(tgts[:, i], preds[:, i]))
             except ValueError:
-                outAUROC.append(0)
-                pass
+                outAUROC.append(float('nan'))
         for i in range(0, len(outAUROC)):
             assert args.n_classes == len(outAUROC)
             classACC[args.labels[i]] = outAUROC[i]
 
         metrics["micro_roc_auc"] = roc_auc_score(tgts, preds, average="micro")
-        metrics["macro_roc_auc"] = roc_auc_score(tgts, preds, average="macro")
+        # Use nanmean so classes with no positive samples in test set are skipped
+        metrics["macro_roc_auc"] = float(np.nanmean(outAUROC))
         metrics["macro_f1"] = f1_score(tgts, preds_bool, average="macro")
         metrics["micro_f1"] = f1_score(tgts, preds_bool, average="micro")
         print('avg_auroc (macro):', round(metrics["macro_roc_auc"], 4))
